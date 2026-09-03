@@ -1287,6 +1287,12 @@ function HistoryScreen({ items, onToggle }) {
 }
 
 function ProductsScreen({ search, onSearch, productList, onNewProduct, onEdit, onDelete, loading, error }) {
+  const byCat = {};
+  productList.forEach(p => { (byCat[p.category] = byCat[p.category] || []).push(p); });
+  const sections = CATEGORIES.filter(c => byCat[c]).map(cat => ({ cat, items: byCat[cat] }));
+  const uncategorized = productList.filter(p => !CATEGORIES.includes(p.category));
+  if (uncategorized.length) sections.push({ cat: 'Other', items: uncategorized });
+
   return (
     <div>
       <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 14 }}>Range</div>
@@ -1301,26 +1307,34 @@ function ProductsScreen({ search, onSearch, productList, onNewProduct, onEdit, o
       </div>
       {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '8px 0' }}>Loading products\u2026</div>}
       {!loading && !error && productList.length === 0 && <EmptyState title="No products found" body="Try a different search, or add a new product." />}
-      {productList.map(p => (
-        <div key={p.id} onClick={() => onEdit(p.id)} style={{
-          background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8,
-          display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
-        }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 500 }}>{p.name}</div>
-            <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>
-              {(p.owner === 'fcg' ? 'FCG \u00b7 ' : '') + p.category + ' \u00b7 ' + p.unit + (p.barcode ? ' \u00b7 ' + p.barcode : ' \u00b7 no barcode')}
-            </div>
+      {sections.map((s, si) => (
+        <div key={si}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: si === 0 ? '4px 2px 10px' : '18px 2px 10px' }}>
+            <span style={{ fontSize: 10, fontWeight: 500, letterSpacing: '.1em', textTransform: 'uppercase', color: T.textMuted }}>{s.cat}</span>
+            <span style={{ flex: 1, height: 1, background: 'linear-gradient(to right,rgba(233,233,237,.13),transparent)' }} />
           </div>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(p.id); }}
-            style={{
-              width: 40, height: 40, borderRadius: 8, border: 'none', background: 'transparent',
-              color: T.textMuted, cursor: 'pointer', fontSize: 17, flex: 'none',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}
-          ><i className="ph ph-trash" /></button>
-          <i className="ph ph-pencil-simple" style={{ color: T.textMuted }} />
+          {s.items.map(p => (
+            <div key={p.id} onClick={() => onEdit(p.id)} style={{
+              background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8,
+              display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 500 }}>{p.name}</div>
+                <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>
+                  {(p.owner === 'fcg' ? 'FCG \u00b7 ' : '') + p.unit + (p.barcode ? ' \u00b7 ' + p.barcode : ' \u00b7 no barcode')}
+                </div>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(p.id); }}
+                style={{
+                  width: 40, height: 40, borderRadius: 8, border: 'none', background: 'transparent',
+                  color: T.textMuted, cursor: 'pointer', fontSize: 17, flex: 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}
+              ><i className="ph ph-trash" /></button>
+              <i className="ph ph-pencil-simple" style={{ color: T.textMuted }} />
+            </div>
+          ))}
         </div>
       ))}
     </div>
