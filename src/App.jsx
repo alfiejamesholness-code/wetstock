@@ -6,8 +6,7 @@ import { Sheet } from './components/Sheet';
 import { supabase } from './supabaseClient';
 
 // Supabase's products table uses snake_case columns; the rest of the app
-// (still working from in-memory prototype shape) uses camelCase and keeps
-// stock nested locally, since stock_levels isn't wired up yet (Step 6).
+// (still working from in-memory prototype shape) uses camelCase.
 function productFromRow(row) {
   return {
     id: row.id,
@@ -17,7 +16,7 @@ function productFromRow(row) {
     owner: row.owner,
     barcode: row.barcode,
     parLevel: row.par_level,
-    stock: {},
+    stock: row.stock || {},
   };
 }
 
@@ -262,7 +261,11 @@ export default function App() {
     const nextProducts = products.map(p => ({ ...p, stock: { ...p.stock } }));
     const apply = (venue, sign) => nextProducts.forEach(p => {
       const q = c.counts[p.id] || 0;
-      if (q) p.stock[venue] = Math.max(0, (p.stock[venue] || 0) + sign * q);
+      if (q) {
+        p.stock[venue] = Math.max(0, (p.stock[venue] || 0) + sign * q);
+        supabase.rpc('update_stock', { p_product_id: p.id, p_site_id: venue, p_delta: sign * q })
+          .then(({ error }) => { if (error) toast("Couldn't save stock change: " + error.message); });
+      }
     });
 
     if (c.mode === 'transfer') {
@@ -391,7 +394,11 @@ export default function App() {
       if (raw === undefined || raw === '') return p;
       const after = Number(raw) || 0;
       const before = stockAt(p, venue);
-      if (after !== before) changes.push({ name: p.name, before, after, variance: after - before });
+      if (after !== before) {
+        changes.push({ name: p.name, before, after, variance: after - before });
+        supabase.rpc('set_stock', { p_product_id: p.id, p_site_id: venue, p_quantity: after })
+          .then(({ error }) => { if (error) toast("Couldn't save recount: " + error.message); });
+      }
       return { ...p, stock: { ...p.stock, [venue]: after } };
     });
     if (!changes.length) { toast('No changes to save'); setView('stock'); return; }
