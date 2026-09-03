@@ -63,6 +63,9 @@ export default function App() {
   const [photoTaken, setPhotoTaken] = useState(false);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState('');
+  const [activityLog, setActivityLog] = useState([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState('');
 
   // Step 3: products load from and save to Supabase. Everything else
   // (sites, sessions, deliveries, transfers, recounts, stock levels) is
@@ -131,6 +134,23 @@ export default function App() {
     await supabase.auth.signOut();
     setPreviewStaff(false); setView('stock'); setSheet(null); setCount(null);
   }
+
+  // Managers only — fetches when the Activity screen is opened.
+  useEffect(() => {
+    if (view !== 'activity' || !session || !profile || profile.role !== 'manager') return;
+    let cancelled = false;
+    async function load() {
+      setActivityLoading(true);
+      const { data, error } = await supabase.from('activity_log').select('*').order('created_at', { ascending: false }).limit(100);
+      if (cancelled) return;
+      if (error) { setActivityError(error.message); setActivityLoading(false); return; }
+      setActivityLog(data || []);
+      setActivityError('');
+      setActivityLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [view, session, profile]);
 
   const nameRef = useRef(null);
   const catRef = useRef(null);
@@ -518,7 +538,7 @@ export default function App() {
     const on = effectiveView === key
       || (key === 'sessions' && effectiveView === 'sessionDetail')
       || (key === 'stock' && effectiveView === 'recount')
-      || (key === 'more' && effectiveView === 'products')
+      || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity'))
       || (effectiveView === 'count' && ((key === 'transfers' && c && c.mode === 'transfer') || (key === 'deliveries' && c && c.mode === 'delivery') || (key === 'sessions' && c && (c.mode === 'out' || c.mode === 'back'))));
     return { label, icon, tone: on ? T.accent : T.textMuted, go: () => go(key) };
   });
@@ -535,12 +555,25 @@ export default function App() {
     toast(previewStaff ? 'Manager view' : 'Previewing staff view');
   }
 
+  // Best-effort: never let a logging failure block the actual action.
+  async function logActivity(action, detail) {
+    if (!session) return;
+    const actorLabel = (profile && profile.full_name) || session.user.email || 'Unknown';
+    try {
+      await supabase.from('activity_log').insert({
+        actor_id: session.user.id, actor_label: actorLabel, action, detail: detail || null,
+      });
+    } catch { /* logging is non-critical */ }
+  }
+
   async function deleteProduct(id) {
+    const target = products.find(p => p.id === id);
     const { error } = await supabase.from('products').delete().eq('id', id);
     if (error) { toast("Couldn't delete: " + error.message); return; }
     setProducts(ps => ps.filter(p => p.id !== id));
     setSheet(null);
     toast('Product deleted');
+    logActivity('Deleted product', target ? target.name : null);
   }
 
   async function onSaveProduct() {
@@ -561,11 +594,13 @@ export default function App() {
       if (error) { setSheetError('Could not save: ' + error.message); return; }
       // keep this session's in-memory stock numbers — stock_levels isn't wired up yet
       setProducts(products.map(p => p.id === editingProduct.id ? { ...productFromRow(data), stock: p.stock } : p));
+      logActivity('Edited product', name);
     } else {
       const { data, error } = await supabase.from('products').insert(row).select().single();
       if (error) { setSheetError('Could not save: ' + error.message); return; }
       const created = productFromRow(data);
       setProducts(products.concat([created]));
+      logActivity('Added product', name);
     }
     setSheet(null); setEditingId(null); setSheetError('');
     toast(editingProduct ? 'Product updated' : 'Product added');
@@ -732,12 +767,19 @@ export default function App() {
           <MoreScreen
             productCountLabel={plural(products.length, 'product')}
             onGoProducts={() => go('products')}
+            onGoActivity={() => go('activity')}
             sites={sites} STORE={STORE}
             onRemoveSite={(id) => setSites(s => s.filter(x => x.id !== id))}
             siteRef={siteRef} onAddSite={onAddSite}
             summaryOn={summaryOn} onToggleSummary={() => setSummaryOn(v => !v)}
             recipients={recipients} onRemoveRecipient={(email) => setRecipients(r => r.filter(x => x !== email))}
             emailRef={emailRef} onAddRecipient={onAddRecipient}
+          />
+        )}
+        {effectiveView === 'activity' && (
+          <ActivityScreen
+            items={activityLog} loading={activityLoading} error={activityError}
+            onBack={() => go('more')}
           />
         )}
       </div>
@@ -1406,19 +1448,31 @@ function TransfersScreen({ transferMonth, transferSummaries, onSummaryClick, fil
   );
 }
 
-function MoreScreen({ productCountLabel, onGoProducts, sites, STORE, onRemoveSite, siteRef, onAddSite, summaryOn, onToggleSummary, recipients, onRemoveRecipient, emailRef, onAddRecipient }) {
+function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, sites, STORE, onRemoveSite, siteRef, onAddSite, summaryOn, onToggleSummary, recipients, onRemoveRecipient, emailRef, onAddRecipient }) {
   return (
     <div>
       <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 16 }}>More</div>
 
       <div onClick={onGoProducts} style={{
-        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 20,
+        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 8,
         display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
       }}>
         <i className="ph ph-package" style={{ fontSize: 20, color: T.accent }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 15, fontWeight: 500 }}>Product range</div>
           <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>{productCountLabel}</div>
+        </div>
+        <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
+      </div>
+
+      <div onClick={onGoActivity} style={{
+        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 20,
+        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+      }}>
+        <i className="ph ph-list-checks" style={{ fontSize: 20, color: T.accent }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 500 }}>Activity</div>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>Who changed what, and when</div>
         </div>
         <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
       </div>
@@ -1472,6 +1526,33 @@ function MoreScreen({ productCountLabel, onGoProducts, sites, STORE, onRemoveSit
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function ActivityScreen({ items, loading, error, onBack }) {
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
+        <i className="ph ph-arrow-left" /> More
+      </button>
+      <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 4 }}>Activity</div>
+      <div style={{ fontSize: 14, color: T.textSecondary, marginBottom: 16 }}>Who changed what, most recent first.</div>
+      {error && (
+        <div style={{ background: 'rgba(224,117,102,.1)', border: `1px solid ${T.danger}`, borderRadius: 8, padding: 12, marginBottom: 14, fontSize: 13, color: T.danger }}>
+          Couldn't reach the database: {error}
+        </div>
+      )}
+      {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '8px 0' }}>Loading\u2026</div>}
+      {!loading && !error && items.length === 0 && <EmptyState title="Nothing logged yet" body="Actions like adding or deleting a product will show up here." />}
+      {items.map(it => (
+        <div key={it.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 500 }}>{it.action}{it.detail ? ' \u2014 ' + it.detail : ''}</div>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 3 }}>
+            {it.actor_label} \u00b7 {new Date(it.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
