@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { T, CATEGORIES, UNITS, DEFAULT_SITES, STORE, MONTHS, plural, fmt, monthKey, stockAt } from './constants';
+import { T, CATEGORIES, UNITS, DEFAULT_SITES, STORE, MONTHS, plural, fmt, monthKey, stockAt, caseSizeFromUnit } from './constants';
 import { Toast, EmptyState, OutlineButton, FilledButton, SegmentedTabs, FieldLabel, inputStyle, ErrorText } from './components/Primitives';
 import { Header, Banner, TabBar } from './components/Chrome';
 import { Sheet } from './components/Sheet';
@@ -16,7 +16,9 @@ function productFromRow(row) {
     owner: row.owner,
     barcode: row.barcode,
     parLevel: row.par_level,
+    caseSize: row.case_size || null,
     stock: row.stock || {},
+    unsplitStock: row.unsplit_stock || {},
   };
 }
 
@@ -154,7 +156,7 @@ export default function App() {
   const nameRef = useRef(null);
   const catRef = useRef(null);
   const unitRef = useRef(null);
-  const barcodeRef = useRef(null);
+  const amountRef = useRef(null);
   const parRef = useRef(null);
   const codeRef = useRef(null);
   const siteRef = useRef(null);
@@ -189,8 +191,8 @@ export default function App() {
   function closeSheet() { setSheet(null); setSheetError(''); setPhotoTaken(false); }
 
   // ---- scanner ----
-  function startScan(mode) {
-    setScan({ mode }); setScanStatus('Point the camera at a barcode');
+  function startScan() {
+    setScan({}); setScanStatus('Point the camera at a barcode');
     scanTimer.current = setInterval(simulateHit, 2300);
   }
   function stopScan() { if (scanTimer.current) clearInterval(scanTimer.current); scanTimer.current = null; }
@@ -200,15 +202,8 @@ export default function App() {
       setScan(curScan => {
         if (!curScan) return curScan;
         const pool = curProducts.filter(p => p.barcode);
-        if (!pool.length) { setScanStatus('No barcodes on file yet — add them under Range'); return curScan; }
+        if (!pool.length) { setScanStatus('No barcodes on file yet'); return curScan; }
         const p = pool[Math.floor(Math.random() * pool.length)];
-        if (curScan.mode === 'field') {
-          if (barcodeRef.current) barcodeRef.current.value = p.barcode;
-          setScanStatus('Read ' + p.barcode);
-          stopScan();
-          setTimeout(() => setScan(null), 500);
-          return curScan;
-        }
         bump(p.id, 1);
         setScanStatus('\u2713 ' + p.name + '  +1');
         return curScan;
@@ -219,11 +214,6 @@ export default function App() {
   function onManualCode() {
     const val = codeRef.current ? codeRef.current.value.trim() : '';
     if (!val) return;
-    if (scan && scan.mode === 'field') {
-      if (barcodeRef.current) barcodeRef.current.value = val;
-      closeScan();
-      return;
-    }
     const p = products.find(x => x.barcode === val);
     if (p) { bump(p.id, 1); setScanStatus('\u2713 ' + p.name + '  +1'); }
     else setScanStatus('No product carries ' + val);
@@ -427,10 +417,11 @@ export default function App() {
       cat,
       items: byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name)).map(p => {
         const qty = stockAt(p, sv);
+        const unsplitQty = (p.unsplitStock && p.unsplitStock[sv]) || 0;
         const low = p.parLevel && qty < p.parLevel;
         return {
           id: p.id, name: p.name, qty,
-          meta: p.unit + (p.parLevel ? ' \u00b7 par ' + p.parLevel : ''),
+          meta: p.unit + (p.parLevel ? ' \u00b7 par ' + p.parLevel : '') + (unsplitQty ? ' \u00b7 +' + unsplitQty + ' unsplit case' + (unsplitQty === 1 ? '' : 's') : ''),
           isFcg: p.owner === 'fcg',
           tone: low ? T.warn : T.text,
           edge: low ? 'rgba(216,162,79,.55)' : 'rgba(233,233,237,.09)',
@@ -536,7 +527,6 @@ export default function App() {
       setProductOwner(editingProduct.owner === 'fcg' ? 'fcg' : 'house');
       if (catRef.current) catRef.current.value = editingProduct.category;
       if (unitRef.current) unitRef.current.value = editingProduct.unit;
-      if (barcodeRef.current) barcodeRef.current.value = editingProduct.barcode || '';
       if (parRef.current) parRef.current.value = editingProduct.parLevel || '';
     }
   }, [editingProduct]);
@@ -605,26 +595,32 @@ export default function App() {
     if (!name) { setSheetError('Give the product a name.'); return; }
     const cat = catRef.current ? catRef.current.value : 'Other';
     const unit = unitRef.current ? unitRef.current.value : 'Bottle';
-    const barcode = barcodeRef.current ? barcodeRef.current.value.trim() : '';
     const parRaw = parRef.current ? parRef.current.value.trim() : '';
     const par = parRaw ? Number(parRaw) : null;
-    const clash = products.find(p => barcode && p.barcode === barcode && (!editingProduct || p.id !== editingProduct.id));
-    if (clash) { setSheetError('\u201c' + clash.name + '\u201d already uses that barcode.'); return; }
     const owner = productOwner === 'fcg' ? 'fcg' : 'house';
-    const row = { name, category: cat, unit, owner, barcode: barcode || null, par_level: par };
+    const caseSize = caseSizeFromUnit(unit);
+    const row = { name, category: cat, unit, owner, par_level: par, case_size: caseSize };
 
     if (editingProduct) {
       const { data, error } = await supabase.from('products').update(row).eq('id', editingProduct.id).select().single();
       if (error) { setSheetError('Could not save: ' + error.message); return; }
-      // keep this session's in-memory stock numbers — stock_levels isn't wired up yet
-      setProducts(products.map(p => p.id === editingProduct.id ? { ...productFromRow(data), stock: p.stock } : p));
+      // keep this session's in-memory stock numbers as they are — editing
+      // the product itself doesn't change quantities, Recount does that
+      setProducts(products.map(p => p.id === editingProduct.id ? { ...productFromRow(data), stock: p.stock, unsplitStock: p.unsplitStock } : p));
       logActivity('Edited product', name);
     } else {
+      const amountRaw = amountRef.current ? amountRef.current.value.trim() : '';
+      const amount = amountRaw ? Math.max(0, Number(amountRaw) || 0) : 0;
+      // A case unit's starting amount is whole cases (unsplit); anything
+      // else (bottle, can, keg...) is individual units (split), landing
+      // in the container by default since that's where deliveries arrive.
+      row.stock = caseSize ? {} : (amount ? { [STORE]: amount } : {});
+      row.unsplit_stock = caseSize ? (amount ? { [STORE]: amount } : {}) : {};
       const { data, error } = await supabase.from('products').insert(row).select().single();
       if (error) { setSheetError('Could not save: ' + error.message); return; }
       const created = productFromRow(data);
       setProducts(products.concat([created]));
-      logActivity('Added product', name);
+      logActivity('Added product', name + (amount ? ' \u2014 ' + amount + (caseSize ? ' case' + (amount === 1 ? '' : 's') : ' ' + unit.toLowerCase()) : ''));
     }
     setSheet(null); setEditingId(null); setSheetError('');
     toast(editingProduct ? 'Product updated' : 'Product added');
@@ -746,7 +742,7 @@ export default function App() {
             onBack={() => { setCount(null); setView(c.mode === 'delivery' ? 'deliveries' : c.mode === 'transfer' ? 'transfers' : 'sessionDetail'); }}
             reviewItems={(c.review || []).map(r => ({ ...r, merge: () => resolveReview(r.id, false), asNew: () => resolveReview(r.id, true) }))}
             autoAdded={c.added || []}
-            onOpenScan={() => startScan('count')}
+            onOpenScan={() => startScan()}
             onInc={(pid) => bump(pid, 1)} onDec={(pid) => bump(pid, -1)}
             onTapRow={(pid) => bump(pid, 1)}
           />
@@ -928,14 +924,15 @@ export default function App() {
           <div style={{ fontSize: 12, color: T.textMuted, marginTop: -10, marginBottom: 16, lineHeight: 1.5 }}>
             Fizzy Cherry stock sits in the container but is invoiced separately when it moves to a site.
           </div>
-          <FieldLabel>Barcode</FieldLabel>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-            <input ref={barcodeRef} placeholder="Optional" style={{ ...inputStyle, flex: 1 }} />
-            <button onClick={() => startScan('field')} style={{
-              width: 48, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: T.card,
-              color: T.textSecondary, cursor: 'pointer', fontSize: 18,
-            }}><i className="ph ph-barcode" /></button>
-          </div>
+          {!editingProduct && (
+            <>
+              <FieldLabel>Starting stock</FieldLabel>
+              <input ref={amountRef} type="number" placeholder="0" style={{ ...inputStyle, marginBottom: 8 }} />
+              <div style={{ fontSize: 12, color: T.textMuted, marginTop: -4, marginBottom: 16, lineHeight: 1.5 }}>
+                Goes into the container. If the unit above is a case size, this counts as whole (unsplit) cases; for any other unit it's counted as individual (split) stock.
+              </div>
+            </>
+          )}
           <FieldLabel>Par level</FieldLabel>
           <input ref={parRef} type="number" placeholder="Optional" style={{ ...inputStyle, marginBottom: 16 }} />
           <ErrorText>{sheetError}</ErrorText>
@@ -1387,7 +1384,7 @@ function ProductsScreen({ search, onSearch, productList, onNewProduct, onEdit, o
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 500 }}>{p.name}</div>
                 <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>
-                  {(p.owner === 'fcg' ? 'FCG \u00b7 ' : '') + p.unit + (p.barcode ? ' \u00b7 ' + p.barcode : ' \u00b7 no barcode')}
+                  {(p.owner === 'fcg' ? 'FCG \u00b7 ' : '') + p.unit + (p.caseSize ? ' \u00b7 unsplit stock' : ' \u00b7 split stock')}
                 </div>
               </div>
               <button
