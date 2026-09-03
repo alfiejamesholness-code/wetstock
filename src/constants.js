@@ -17,12 +17,8 @@ export const T = {
 };
 
 export const CATEGORIES = ['Beer', 'Cider', 'Wine', 'Spirits', 'Soft Drinks', 'Other'];
-export const UNITS = ['Keg', 'Bottle', 'Can', 'Bag-in-box', 'Other', 'Case of 6', 'Case of 8', 'Case of 12', 'Case of 18', 'Case of 24'];
-
-export function caseSizeFromUnit(unit) {
-  const m = /^Case of (\d+)$/.exec(unit || '');
-  return m ? Number(m[1]) : null;
-}
+export const UNITS = ['Keg', 'Bottle', 'Can', 'Bag-in-box', 'Other'];
+export const CASE_SIZES = [6, 8, 12, 18, 24];
 export const DEFAULT_SITES = [
   { id: 'lc', name: 'Louis Container' },
   { id: 'kc', name: 'Kingscote' },

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { T, CATEGORIES, UNITS, DEFAULT_SITES, STORE, MONTHS, plural, fmt, monthKey, stockAt, caseSizeFromUnit } from './constants';
+import { T, CATEGORIES, UNITS, CASE_SIZES, DEFAULT_SITES, STORE, MONTHS, plural, fmt, monthKey, stockAt } from './constants';
 import { Toast, EmptyState, OutlineButton, FilledButton, SegmentedTabs, FieldLabel, inputStyle, ErrorText } from './components/Primitives';
 import { Header, Banner, TabBar } from './components/Chrome';
 import { Sheet } from './components/Sheet';
@@ -157,6 +157,8 @@ export default function App() {
   const catRef = useRef(null);
   const unitRef = useRef(null);
   const amountRef = useRef(null);
+  const caseAmountRef = useRef(null);
+  const caseSizeRef = useRef(null);
   const parRef = useRef(null);
   const codeRef = useRef(null);
   const siteRef = useRef(null);
@@ -221,9 +223,14 @@ export default function App() {
   }
 
   // ---- counting ----
-  function bump(pid, delta) {
+  function bump(pid, delta, kind) {
     setCount(c => {
       if (!c) return c;
+      if (kind === 'case') {
+        const caseCounts = { ...(c.caseCounts || {}) };
+        caseCounts[pid] = Math.max(0, (caseCounts[pid] || 0) + delta);
+        return { ...c, caseCounts };
+      }
       const counts = { ...c.counts };
       counts[pid] = Math.max(0, (counts[pid] || 0) + delta);
       return { ...c, counts };
@@ -231,24 +238,29 @@ export default function App() {
   }
   function openCount(mode, sessionId) {
     if (mode === 'delivery') {
-      setCount({ mode, counts: { ...((draft && draft.items) || {}) }, review: (draft && draft.review) || [], added: (draft && draft.added) || [] });
+      setCount({ mode, counts: { ...((draft && draft.items) || {}) }, caseCounts: { ...((draft && draft.caseItems) || {}) }, review: (draft && draft.review) || [], added: (draft && draft.added) || [] });
       setSheet(null); setView('count');
       return;
     }
     if (mode === 'transfer') {
-      setCount({ mode, counts: {}, review: [], added: [] });
+      setCount({ mode, counts: {}, caseCounts: {}, review: [], added: [] });
       setSheet(null); setView('count');
       return;
     }
     const ses = sessions.find(x => x.id === sessionId);
-    setCount({ mode, sessionId, counts: { ...(mode === 'out' ? ses.out : ses.back) }, review: [], added: [] });
+    setCount({
+      mode, sessionId,
+      counts: { ...(mode === 'out' ? ses.out : ses.back) },
+      caseCounts: { ...(mode === 'out' ? (ses.outCases || {}) : (ses.backCases || {})) },
+      review: [], added: [],
+    });
     setSheet(null); setView('count');
   }
   function finishCount() {
     const c = count;
     if (!c) return;
     if (c.review && c.review.length) { toast('Resolve the review item first'); return; }
-    const nextProducts = products.map(p => ({ ...p, stock: { ...p.stock } }));
+    const nextProducts = products.map(p => ({ ...p, stock: { ...p.stock }, unsplitStock: { ...p.unsplitStock } }));
     const apply = (venue, sign) => nextProducts.forEach(p => {
       const q = c.counts[p.id] || 0;
       if (q) {
@@ -257,13 +269,21 @@ export default function App() {
           .then(({ error }) => { if (error) toast("Couldn't save stock change: " + error.message); });
       }
     });
+    const applyCases = (venue, sign) => nextProducts.forEach(p => {
+      const q = (c.caseCounts && c.caseCounts[p.id]) || 0;
+      if (q) {
+        p.unsplitStock[venue] = Math.max(0, (p.unsplitStock[venue] || 0) + sign * q);
+        supabase.rpc('update_unsplit_stock', { p_product_id: p.id, p_site_id: venue, p_delta: sign * q })
+          .then(({ error }) => { if (error) toast("Couldn't save case stock change: " + error.message); });
+      }
+    });
 
     if (c.mode === 'transfer') {
       const d = draft || {};
-      const lines = Object.keys(c.counts).filter(k => c.counts[k] > 0);
-      if (!lines.length) { toast('Nothing counted yet'); return; }
-      apply(STORE, -1);
-      const rec = { id: 't' + Date.now(), date: new Date().toISOString().slice(0, 10), site: d.site, note: d.note || '', items: { ...c.counts } };
+      const anyCounted = Object.keys(c.counts).some(k => c.counts[k] > 0) || Object.keys(c.caseCounts || {}).some(k => c.caseCounts[k] > 0);
+      if (!anyCounted) { toast('Nothing counted yet'); return; }
+      apply(STORE, -1); applyCases(STORE, -1);
+      const rec = { id: 't' + Date.now(), date: new Date().toISOString().slice(0, 10), site: d.site, note: d.note || '', items: { ...c.counts }, caseItems: { ...(c.caseCounts || {}) } };
       setProducts(nextProducts);
       setTransfers(t => [rec, ...t]);
       setCount(null); setDraft(null); setView('transfers');
@@ -274,8 +294,8 @@ export default function App() {
 
     if (c.mode === 'delivery') {
       const d = draft || { supplier: 'Delivery', venue: 'lc', date: new Date().toISOString().slice(0, 10) };
-      apply(d.venue, 1);
-      const rec = { id: 'd' + Date.now(), supplier: d.supplier, reference: d.reference || '', date: d.date, venue: d.venue, hasPhoto: !!d.hasPhoto, items: { ...c.counts } };
+      apply(d.venue, 1); applyCases(d.venue, 1);
+      const rec = { id: 'd' + Date.now(), supplier: d.supplier, reference: d.reference || '', date: d.date, venue: d.venue, hasPhoto: !!d.hasPhoto, items: { ...c.counts }, caseItems: { ...(c.caseCounts || {}) } };
       setProducts(nextProducts);
       setDeliveries(ds => [rec, ...ds]);
       setCount(null); setDraft(null); setView('deliveries');
@@ -287,24 +307,26 @@ export default function App() {
     const ses = nextSessions.find(x => x.id === c.sessionId);
     if (c.mode === 'out') {
       ses.out = { ...c.counts };
+      ses.outCases = { ...(c.caseCounts || {}) };
       ses.status = 'out';
-      apply(ses.venue, -1);
+      apply(ses.venue, -1); applyCases(ses.venue, -1);
       setProducts(nextProducts); setSessions(nextSessions); setCount(null);
       setView('sessionDetail'); setActiveSessionId(ses.id);
       toast('Container is out');
-      const items = itemsFromCounts(c.counts, products);
+      const items = itemsFromCounts(c.counts, c.caseCounts, products);
       logActivity('Loaded out', ses.name + ' \u2014 ' + summarizeItems(items),
         { sessionId: ses.id, session: ses.name, venue: venueName(ses.venue), mode: 'out', items });
     } else {
       ses.back = { ...c.counts };
+      ses.backCases = { ...(c.caseCounts || {}) };
       ses.status = 'complete';
       ses.completedAt = new Date().toISOString();
-      apply(ses.venue, 1);
+      apply(ses.venue, 1); applyCases(ses.venue, 1);
       setProducts(nextProducts); setSessions(nextSessions); setCount(null); setActiveSessionId(null);
       setView(role === 'admin' ? 'history' : 'sessions');
       setOpenHistory(o => ({ ...o, [ses.id]: true }));
       toast('Session complete');
-      const items = itemsFromCounts(c.counts, products);
+      const items = itemsFromCounts(c.counts, c.caseCounts, products);
       logActivity('Returned', ses.name + ' \u2014 ' + summarizeItems(items),
         { sessionId: ses.id, session: ses.name, venue: venueName(ses.venue), mode: 'back', items });
     }
@@ -445,11 +467,17 @@ export default function App() {
   const ses = c && c.sessionId ? sessions.find(x => x.id === c.sessionId) : null;
   const countTiles = !c ? [] : products.map(p => {
     const qty = (c.counts && c.counts[p.id]) || 0;
+    const caseQty = (c.caseCounts && c.caseCounts[p.id]) || 0;
     let meta = p.unit;
-    if (c.mode === 'out' && ses) meta = p.unit + ' \u00b7 available ' + stockAt(p, ses.venue);
-    if (c.mode === 'back' && ses) meta = 'went out: ' + (ses.out[p.id] || 0);
+    if (c.mode === 'out' && ses) {
+      const availCases = (p.unsplitStock && p.unsplitStock[ses.venue]) || 0;
+      meta = p.unit + ' \u00b7 available ' + stockAt(p, ses.venue) + (p.caseSize ? ' + ' + availCases + ' case' + (availCases === 1 ? '' : 's') : '');
+    }
+    if (c.mode === 'back' && ses) {
+      meta = 'went out: ' + (ses.out[p.id] || 0) + (p.caseSize ? ' + ' + ((ses.outCases && ses.outCases[p.id]) || 0) + ' cases' : '');
+    }
     if (c.mode === 'transfer') meta = p.unit + ' \u00b7 in container ' + stockAt(p, STORE);
-    return { id: p.id, name: p.name, meta, qty, isFcg: p.owner === 'fcg' };
+    return { id: p.id, name: p.name, meta, qty, caseQty, hasCase: !!p.caseSize, caseSize: p.caseSize, isFcg: p.owner === 'fcg' };
   });
   const countTitle = c ? (c.mode === 'out' ? 'Loading out' : c.mode === 'back' ? 'Logging return' : c.mode === 'transfer' ? 'Transfer out' : 'Count delivery') : '';
   const countSub = !c ? '' : c.mode === 'transfer'
@@ -527,6 +555,7 @@ export default function App() {
       setProductOwner(editingProduct.owner === 'fcg' ? 'fcg' : 'house');
       if (catRef.current) catRef.current.value = editingProduct.category;
       if (unitRef.current) unitRef.current.value = editingProduct.unit;
+      if (caseSizeRef.current) caseSizeRef.current.value = editingProduct.caseSize || '';
       if (parRef.current) parRef.current.value = editingProduct.parLevel || '';
     }
   }, [editingProduct]);
@@ -569,15 +598,22 @@ export default function App() {
     } catch { /* logging is non-critical */ }
   }
 
-  function itemsFromCounts(counts, prods) {
-    return Object.keys(counts).filter(k => counts[k] > 0).map(k => {
+  function itemsFromCounts(counts, caseCounts, prods) {
+    const ids = new Set([...Object.keys(counts), ...Object.keys(caseCounts || {})]);
+    return Array.from(ids).filter(k => (counts[k] || 0) > 0 || ((caseCounts && caseCounts[k]) || 0) > 0).map(k => {
       const p = prods.find(x => x.id === k);
-      return { name: p ? p.name : 'Removed product', qty: counts[k] };
+      return { name: p ? p.name : 'Removed product', qty: counts[k] || 0, caseQty: (caseCounts && caseCounts[k]) || 0 };
     });
+  }
+  function summarizeItem(i) {
+    const parts = [];
+    if (i.caseQty) parts.push(i.caseQty + ' case' + (i.caseQty === 1 ? '' : 's'));
+    if (i.qty) parts.push(i.qty + ' individual');
+    return i.name + ' (' + parts.join(', ') + ')';
   }
   function summarizeItems(items) {
     if (!items.length) return 'nothing';
-    return items.slice(0, 3).map(i => i.name + ' x' + i.qty).join(', ') + (items.length > 3 ? ' +' + (items.length - 3) + ' more' : '');
+    return items.slice(0, 3).map(summarizeItem).join(', ') + (items.length > 3 ? ' +' + (items.length - 3) + ' more' : '');
   }
 
   async function deleteProduct(id) {
@@ -598,7 +634,8 @@ export default function App() {
     const parRaw = parRef.current ? parRef.current.value.trim() : '';
     const par = parRaw ? Number(parRaw) : null;
     const owner = productOwner === 'fcg' ? 'fcg' : 'house';
-    const caseSize = caseSizeFromUnit(unit);
+    const caseSizeRaw = caseSizeRef.current ? caseSizeRef.current.value : '';
+    const caseSize = caseSizeRaw ? Number(caseSizeRaw) : null;
     const row = { name, category: cat, unit, owner, par_level: par, case_size: caseSize };
 
     if (editingProduct) {
@@ -611,16 +648,18 @@ export default function App() {
     } else {
       const amountRaw = amountRef.current ? amountRef.current.value.trim() : '';
       const amount = amountRaw ? Math.max(0, Number(amountRaw) || 0) : 0;
-      // A case unit's starting amount is whole cases (unsplit); anything
-      // else (bottle, can, keg...) is individual units (split), landing
-      // in the container by default since that's where deliveries arrive.
-      row.stock = caseSize ? {} : (amount ? { [STORE]: amount } : {});
-      row.unsplit_stock = caseSize ? (amount ? { [STORE]: amount } : {}) : {};
+      const caseAmountRaw = caseAmountRef.current ? caseAmountRef.current.value.trim() : '';
+      const caseAmount = caseAmountRaw ? Math.max(0, Number(caseAmountRaw) || 0) : 0;
+      row.stock = amount ? { [STORE]: amount } : {};
+      row.unsplit_stock = (caseSize && caseAmount) ? { [STORE]: caseAmount } : {};
       const { data, error } = await supabase.from('products').insert(row).select().single();
       if (error) { setSheetError('Could not save: ' + error.message); return; }
       const created = productFromRow(data);
       setProducts(products.concat([created]));
-      logActivity('Added product', name + (amount ? ' \u2014 ' + amount + (caseSize ? ' case' + (amount === 1 ? '' : 's') : ' ' + unit.toLowerCase()) : ''));
+      const parts = [];
+      if (caseSize && caseAmount) parts.push(caseAmount + ' case' + (caseAmount === 1 ? '' : 's'));
+      if (amount) parts.push(amount + ' ' + unit.toLowerCase());
+      logActivity('Added product', name + (parts.length ? ' \u2014 ' + parts.join(', ') : ''));
     }
     setSheet(null); setEditingId(null); setSheetError('');
     toast(editingProduct ? 'Product updated' : 'Product added');
@@ -744,6 +783,7 @@ export default function App() {
             autoAdded={c.added || []}
             onOpenScan={() => startScan()}
             onInc={(pid) => bump(pid, 1)} onDec={(pid) => bump(pid, -1)}
+            onIncCase={(pid) => bump(pid, 1, 'case')} onDecCase={(pid) => bump(pid, -1, 'case')}
             onTapRow={(pid) => bump(pid, 1)}
           />
         )}
@@ -912,6 +952,14 @@ export default function App() {
               </select>
             </div>
           </div>
+          <FieldLabel>Sold in cases of</FieldLabel>
+          <select ref={caseSizeRef} defaultValue="" style={{ ...inputStyle, marginBottom: 6 }}>
+            <option value="">Not sold in cases</option>
+            {CASE_SIZES.map(n => <option key={n} value={n}>{n} per case</option>)}
+          </select>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: -4, marginBottom: 16, lineHeight: 1.5 }}>
+            If set, this product tracks two pools: whole cases (unsplit) and individual {unitRef.current ? unitRef.current.value.toLowerCase() : 'units'} (split) once a case is opened.
+          </div>
           <FieldLabel>Belongs to</FieldLabel>
           <SegmentedTabs options={[
             { id: 'house', name: 'Relish' }, { id: 'fcg', name: 'Fizzy Cherry' },
@@ -926,10 +974,18 @@ export default function App() {
           </div>
           {!editingProduct && (
             <>
-              <FieldLabel>Starting stock</FieldLabel>
-              <input ref={amountRef} type="number" placeholder="0" style={{ ...inputStyle, marginBottom: 8 }} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 8 }}>
+                <div>
+                  <FieldLabel>Starting stock \u2014 cases</FieldLabel>
+                  <input ref={caseAmountRef} type="number" placeholder="0" style={inputStyle} />
+                </div>
+                <div>
+                  <FieldLabel>Starting stock \u2014 individual</FieldLabel>
+                  <input ref={amountRef} type="number" placeholder="0" style={inputStyle} />
+                </div>
+              </div>
               <div style={{ fontSize: 12, color: T.textMuted, marginTop: -4, marginBottom: 16, lineHeight: 1.5 }}>
-                Goes into the container. If the unit above is a case size, this counts as whole (unsplit) cases; for any other unit it's counted as individual (split) stock.
+                Both go into the container. Leave cases at 0 if it's not sold that way.
               </div>
             </>
           )}
@@ -1179,7 +1235,8 @@ function SessionDetailScreen({ session, venueName, fmt, onBack, onPrimary, onCan
   );
 }
 
-function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewItems, autoAdded, onOpenScan, onInc, onDec, onTapRow }) {
+function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewItems, autoAdded, onOpenScan, onInc, onDec, onIncCase, onDecCase, onTapRow }) {
+  const [expandedId, setExpandedId] = useState(null);
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 10, padding: 0 }}>
@@ -1215,7 +1272,54 @@ function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewI
       )}
 
       {tiles.map(p => {
-        const on = p.qty > 0;
+        const on = p.qty > 0 || p.caseQty > 0;
+
+        if (p.hasCase) {
+          const expanded = expandedId === p.id;
+          return (
+            <div key={p.id} style={{
+              background: on ? 'rgba(145,132,217,.08)' : T.card,
+              border: `1px solid ${on ? 'rgba(145,132,217,.4)' : 'rgba(233,233,237,.09)'}`,
+              borderRadius: 8, marginBottom: 8, overflow: 'hidden',
+            }}>
+              <div
+                onClick={() => setExpandedId(expanded ? null : p.id)}
+                style={{ padding: 13, display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <span style={{ fontSize: 15, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                    {p.isFcg && <FcgChip />}
+                  </div>
+                  <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>{p.meta}</div>
+                </div>
+                <div style={{ fontSize: 13, color: on ? T.accentLight : T.placeholder, textAlign: 'right', flex: 'none' }}>
+                  {p.caseQty ? p.caseQty + ' case' + (p.caseQty === 1 ? '' : 's') : ''}
+                  {p.caseQty && p.qty ? ' + ' : ''}
+                  {p.qty ? p.qty + ' individual' : (!p.caseQty ? '0' : '')}
+                </div>
+                <i className={`ph ${expanded ? 'ph-caret-up' : 'ph-caret-down'}`} style={{ color: T.textMuted, flex: 'none' }} />
+              </div>
+              {expanded && (
+                <div style={{ padding: '0 13px 13px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 13, color: T.textSecondary, flex: 1 }}>Cases (of {p.caseSize})</span>
+                    <button onClick={() => onDecCase(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.textSecondary, fontSize: 17, cursor: 'pointer', flex: 'none' }}>\u2212</button>
+                    <div style={{ width: 26, textAlign: 'center', fontSize: 17, fontWeight: 500, color: p.caseQty ? T.accentLight : T.placeholder }}>{p.caseQty}</div>
+                    <button onClick={() => onIncCase(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: `1px solid ${T.accent}`, background: 'rgba(145,132,217,.12)', color: T.accentLight, fontSize: 17, cursor: 'pointer', flex: 'none' }}>+</button>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 13, color: T.textSecondary, flex: 1 }}>Individual (split)</span>
+                    <button onClick={() => onDec(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.textSecondary, fontSize: 17, cursor: 'pointer', flex: 'none' }}>\u2212</button>
+                    <div style={{ width: 26, textAlign: 'center', fontSize: 17, fontWeight: 500, color: p.qty ? T.accentLight : T.placeholder }}>{p.qty}</div>
+                    <button onClick={() => onInc(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: `1px solid ${T.accent}`, background: 'rgba(145,132,217,.12)', color: T.accentLight, fontSize: 17, cursor: 'pointer', flex: 'none' }}>+</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        }
+
         return (
           <div
             key={p.id}
@@ -1551,6 +1655,13 @@ function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, sites, STOR
   );
 }
 
+function describeMovementItem(x) {
+  const parts = [];
+  if (x.caseQty) parts.push(x.caseQty + ' case' + (x.caseQty === 1 ? '' : 's'));
+  if (x.qty) parts.push(x.qty + (x.caseQty ? ' individual' : ''));
+  return x.name + ' ' + (parts.length ? parts.join(' + ') : x.qty || 0);
+}
+
 function ActivityScreen({ items, loading, error, onBack }) {
   // Pair up each "Loaded out" with its matching "Returned" (same session, same person)
   // into one movement card — what they took, and what came back.
@@ -1592,11 +1703,11 @@ function ActivityScreen({ items, loading, error, onBack }) {
               </div>
               <div style={{ fontSize: 13, marginBottom: 4 }}>
                 <span style={{ color: T.textMuted }}>Took: </span>
-                {m.took ? m.took.map(x => x.name + ' x' + x.qty).join(', ') : 'not logged'}
+                {m.took ? m.took.map(describeMovementItem).join(', ') : 'not logged'}
               </div>
               <div style={{ fontSize: 13, color: m.broughtBack ? T.text : T.warn }}>
                 <span style={{ color: T.textMuted }}>Brought back: </span>
-                {m.broughtBack ? (m.broughtBack.length ? m.broughtBack.map(x => x.name + ' x' + x.qty).join(', ') : 'nothing') : 'not yet returned'}
+                {m.broughtBack ? (m.broughtBack.length ? m.broughtBack.map(describeMovementItem).join(', ') : 'nothing') : 'not yet returned'}
               </div>
             </div>
           ))}
