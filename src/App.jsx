@@ -410,7 +410,7 @@ export default function App() {
   const split = fcgProducts.length > 0;
   const ownerSections = split
     ? [
-        { label: 'Our stock', note: plural(houseProducts.length, 'product'), showHeader: true, groups: groupsFor(houseProducts) },
+        { label: 'Relish stock', note: plural(houseProducts.length, 'product'), showHeader: true, groups: groupsFor(houseProducts) },
         { label: 'Fizzy Cherry (FCG)', note: 'invoiced separately when transferred', showHeader: true, groups: groupsFor(fcgProducts) },
       ].filter(x => x.groups.length)
     : [{ label: '', note: '', showHeader: false, groups: groupsFor(products) }];
@@ -852,7 +852,7 @@ export default function App() {
           </div>
           <FieldLabel>Belongs to</FieldLabel>
           <SegmentedTabs options={[
-            { id: 'house', name: 'Ours' }, { id: 'fcg', name: 'Fizzy Cherry' },
+            { id: 'house', name: 'Relish' }, { id: 'fcg', name: 'Fizzy Cherry' },
           ].map(o => ({
             name: o.name, pick: () => setProductOwner(o.id),
             edge: productOwner === o.id ? T.accent : 'transparent',
