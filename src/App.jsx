@@ -299,6 +299,9 @@ export default function App() {
       setProducts(nextProducts); setSessions(nextSessions); setCount(null);
       setView('sessionDetail'); setActiveSessionId(ses.id);
       toast('Container is out');
+      const items = itemsFromCounts(c.counts, products);
+      logActivity('Loaded out', ses.name + ' \u2014 ' + summarizeItems(items),
+        { sessionId: ses.id, session: ses.name, venue: venueName(ses.venue), mode: 'out', items });
     } else {
       ses.back = { ...c.counts };
       ses.status = 'complete';
@@ -308,6 +311,9 @@ export default function App() {
       setView(role === 'admin' ? 'history' : 'sessions');
       setOpenHistory(o => ({ ...o, [ses.id]: true }));
       toast('Session complete');
+      const items = itemsFromCounts(c.counts, products);
+      logActivity('Returned', ses.name + ' \u2014 ' + summarizeItems(items),
+        { sessionId: ses.id, session: ses.name, venue: venueName(ses.venue), mode: 'back', items });
     }
   }
 
@@ -556,14 +562,25 @@ export default function App() {
   }
 
   // Best-effort: never let a logging failure block the actual action.
-  async function logActivity(action, detail) {
+  async function logActivity(action, detail, metadata) {
     if (!session) return;
     const actorLabel = (profile && profile.full_name) || session.user.email || 'Unknown';
     try {
       await supabase.from('activity_log').insert({
-        actor_id: session.user.id, actor_label: actorLabel, action, detail: detail || null,
+        actor_id: session.user.id, actor_label: actorLabel, action, detail: detail || null, metadata: metadata || null,
       });
     } catch { /* logging is non-critical */ }
+  }
+
+  function itemsFromCounts(counts, prods) {
+    return Object.keys(counts).filter(k => counts[k] > 0).map(k => {
+      const p = prods.find(x => x.id === k);
+      return { name: p ? p.name : 'Removed product', qty: counts[k] };
+    });
+  }
+  function summarizeItems(items) {
+    if (!items.length) return 'nothing';
+    return items.slice(0, 3).map(i => i.name + ' x' + i.qty).join(', ') + (items.length > 3 ? ' +' + (items.length - 3) + ' more' : '');
   }
 
   async function deleteProduct(id) {
@@ -1531,6 +1548,20 @@ function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, sites, STOR
 }
 
 function ActivityScreen({ items, loading, error, onBack }) {
+  // Pair up each "Loaded out" with its matching "Returned" (same session, same person)
+  // into one movement card — what they took, and what came back.
+  const bySession = {};
+  items.forEach(it => {
+    if (!it.metadata || (it.metadata.mode !== 'out' && it.metadata.mode !== 'back')) return;
+    const key = it.metadata.sessionId + '|' + it.actor_label;
+    if (!bySession[key]) {
+      bySession[key] = { actor: it.actor_label, session: it.metadata.session, venue: it.metadata.venue, took: null, tookAt: null, broughtBack: null, backAt: null };
+    }
+    if (it.metadata.mode === 'out') { bySession[key].took = it.metadata.items; bySession[key].tookAt = it.created_at; }
+    else { bySession[key].broughtBack = it.metadata.items; bySession[key].backAt = it.created_at; }
+  });
+  const movements = Object.values(bySession).sort((a, b) => (b.backAt || b.tookAt).localeCompare(a.backAt || a.tookAt));
+
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
@@ -1544,7 +1575,31 @@ function ActivityScreen({ items, loading, error, onBack }) {
         </div>
       )}
       {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '8px 0' }}>Loading\u2026</div>}
-      {!loading && !error && items.length === 0 && <EmptyState title="Nothing logged yet" body="Actions like adding or deleting a product will show up here." />}
+      {!loading && !error && items.length === 0 && <EmptyState title="Nothing logged yet" body="Actions like adding a product, or loading a session out and back, will show up here." />}
+
+      {movements.length > 0 && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 500, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>Stock movements</div>
+          {movements.map((m, i) => (
+            <div key={i} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8 }}>
+              <div style={{ fontSize: 14.5, fontWeight: 500 }}>{m.actor}</div>
+              <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2, marginBottom: 8 }}>
+                {m.session}{m.venue ? ' \u00b7 ' + m.venue : ''} \u00b7 {new Date(m.backAt || m.tookAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+              </div>
+              <div style={{ fontSize: 13, marginBottom: 4 }}>
+                <span style={{ color: T.textMuted }}>Took: </span>
+                {m.took ? m.took.map(x => x.name + ' x' + x.qty).join(', ') : 'not logged'}
+              </div>
+              <div style={{ fontSize: 13, color: m.broughtBack ? T.text : T.warn }}>
+                <span style={{ color: T.textMuted }}>Brought back: </span>
+                {m.broughtBack ? (m.broughtBack.length ? m.broughtBack.map(x => x.name + ' x' + x.qty).join(', ') : 'nothing') : 'not yet returned'}
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, fontWeight: 500, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.06em', margin: '20px 0 8px' }}>All activity</div>
+        </>
+      )}
+
       {items.map(it => (
         <div key={it.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8 }}>
           <div style={{ fontSize: 14.5, fontWeight: 500 }}>{it.action}{it.detail ? ' \u2014 ' + it.detail : ''}</div>
