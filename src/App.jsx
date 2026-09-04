@@ -51,7 +51,7 @@ export default function App() {
   const [sheet, setSheet] = useState(null);
   const [sheetError, setSheetError] = useState('');
   const [toastMsg, setToastMsg] = useState('');
-  const [banner, setBanner] = useState('');
+  const [dismissedLowKey, setDismissedLowKey] = useState('');
   const [search, setSearch] = useState('');
   const [openHistory, setOpenHistory] = useState({});
   const [activeSessionId, setActiveSessionId] = useState(null);
@@ -124,6 +124,19 @@ export default function App() {
     loadProfile();
     return () => { cancelled = true; };
   }, [session]);
+
+  // Total stock across every site, compared against each product's par
+  // level — this is the "time to reorder" signal, so it's checked
+  // business-wide rather than per-venue. Re-shows the banner whenever the
+  // set of low products changes, but stays dismissed otherwise.
+  const belowPar = products.filter(p => p.parLevel
+    && sites.reduce((sum, v) => sum + stockAt(p, v.id), 0) < p.parLevel);
+  const belowParKey = belowPar.map(p => p.id).sort().join(',');
+  const lowStockBanner = belowPar.length && belowParKey !== dismissedLowKey
+    ? (belowPar.length <= 3
+      ? 'Time to order: ' + belowPar.map(p => p.name).join(', ')
+      : belowPar.length + ' products need ordering — check Products for details')
+    : '';
 
   async function onSignIn(email, password) {
     setAuthError(''); setAuthBusy(true);
@@ -772,7 +785,7 @@ export default function App() {
         onRoleToggle={onRoleToggle}
         onSignOut={onSignOut}
       />
-      <Banner text={isAdmin ? banner : ''} onDismiss={() => setBanner('')} />
+      <Banner text={isAdmin ? lowStockBanner : ''} onDismiss={() => setDismissedLowKey(belowParKey)} />
 
       <div className="ws-scroll" style={{ flex: 1, overflow: 'auto', padding: '18px 16px 36px' }}>
         {effectiveView === 'stock' && (
