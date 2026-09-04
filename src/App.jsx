@@ -393,7 +393,7 @@ export default function App() {
   }
 
   // ---- invoice auto-read (the one bit of "real logic") ----
-  function autoRead(lines, emptyMessage) {
+  async function autoRead(lines, emptyMessage) {
     if (!lines || !lines.length) {
       setDraft(d => ({ ...d, hasPhoto: true, items: {}, review: [], added: [] }));
       setSheet(null); setView('count'); setPhotoTaken(true);
@@ -404,12 +404,16 @@ export default function App() {
     const norm = n => n.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const tokens = n => norm(n).split(' ').filter(Boolean);
     const items = {}; const review = []; const added = [];
-    let nextProducts = products.slice(); let matched = 0;
+    let nextProducts = products.slice(); let matched = 0; let failed = 0;
 
-    lines.forEach(line => {
+    // Unmatched lines are real new products, so they're inserted into
+    // Supabase immediately rather than kept as fake local-only ids - the
+    // stock RPC calls below need a real row to attach to, otherwise they
+    // silently fail to save anything for them.
+    for (const line of lines) {
       const n = norm(line.name);
       const confident = nextProducts.find(p => norm(p.name).includes(n) || n.includes(norm(p.name)));
-      if (confident) { items[confident.id] = (items[confident.id] || 0) + line.quantity; matched++; return; }
+      if (confident) { items[confident.id] = (items[confident.id] || 0) + line.quantity; matched++; continue; }
       const ta = new Set(tokens(line.name));
       let best = null, bestScore = 0;
       nextProducts.forEach(p => {
@@ -420,13 +424,17 @@ export default function App() {
       });
       if (best && bestScore >= 0.34) {
         review.push({ id: 'rv' + review.length, name: line.name, quantity: line.quantity, candidateId: best.id, candidateName: best.name });
-        return;
+        continue;
       }
-      const np = { id: 'new' + nextProducts.length, name: line.name, category: 'Other', unit: 'Case', stock: {}, parLevel: null, barcode: null };
+      const { data: row, error } = await supabase.from('products')
+        .insert({ name: line.name, category: 'Other', unit: 'Case' })
+        .select().single();
+      if (error) { failed++; continue; }
+      const np = productFromRow(row);
       nextProducts = nextProducts.concat([np]);
-      added.push(line.name);
+      added.push(np.name);
       items[np.id] = line.quantity;
-    });
+    }
 
     setProducts(nextProducts);
     setDraft(d => ({ ...d, hasPhoto: true, items, review, added }));
@@ -435,26 +443,32 @@ export default function App() {
     const parts = ['Matched ' + matched];
     if (added.length) parts.push(added.length + ' new');
     if (review.length) parts.push(review.length + ' to review');
+    if (failed) parts.push(failed + " couldn't be added");
     toast(parts.join(' \u00b7 '));
   }
 
-  function resolveReview(id, asNew) {
-    setCount(c => {
-      if (!c) return c;
-      const item = (c.review || []).find(r => r.id === id);
-      if (!item) return c;
-      const counts = { ...c.counts };
-      let added = (c.added || []).slice();
-      if (asNew) {
-        const np = { id: 'new' + Date.now(), name: item.name, category: 'Other', unit: 'Bottle', stock: {}, parLevel: null, barcode: null };
-        setProducts(ps => ps.concat([np]));
-        counts[np.id] = (counts[np.id] || 0) + item.quantity;
-        added = added.concat([item.name]);
-      } else {
-        counts[item.candidateId] = (counts[item.candidateId] || 0) + item.quantity;
-      }
-      return { ...c, counts, added, review: c.review.filter(r => r.id !== id) };
-    });
+  async function resolveReview(id, asNew) {
+    const item = count && (count.review || []).find(r => r.id === id);
+    if (!item) return;
+    if (asNew) {
+      const { data: row, error } = await supabase.from('products')
+        .insert({ name: item.name, category: 'Other', unit: 'Bottle' })
+        .select().single();
+      if (error) { toast("Couldn't add that product: " + error.message); return; }
+      const np = productFromRow(row);
+      setProducts(ps => ps.concat([np]));
+      setCount(c => {
+        if (!c) return c;
+        const counts = { ...c.counts, [np.id]: (c.counts[np.id] || 0) + item.quantity };
+        return { ...c, counts, added: (c.added || []).concat([np.name]), review: c.review.filter(r => r.id !== id) };
+      });
+    } else {
+      setCount(c => {
+        if (!c) return c;
+        const counts = { ...c.counts, [item.candidateId]: (c.counts[item.candidateId] || 0) + item.quantity };
+        return { ...c, counts, review: c.review.filter(r => r.id !== id) };
+      });
+    }
     toast(asNew ? 'Added as a new product' : 'Merged into the existing product');
   }
 
@@ -763,9 +777,9 @@ export default function App() {
       const { data } = await worker.recognize(file);
       await worker.terminate();
       const lines = parseInvoiceLines(data.text || '');
-      autoRead(lines, lines.length ? undefined : "Couldn't make out any lines on that invoice — count by hand instead.");
+      await autoRead(lines, lines.length ? undefined : "Couldn't make out any lines on that invoice — count by hand instead.");
     } catch (err) {
-      autoRead([], "Couldn't read that invoice — " + (err.message || 'try again') + '. Count by hand instead.');
+      await autoRead([], "Couldn't read that invoice — " + (err.message || 'try again') + '. Count by hand instead.');
     } finally {
       setInvoiceReading(false);
     }
