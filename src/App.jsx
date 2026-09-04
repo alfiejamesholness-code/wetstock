@@ -569,7 +569,7 @@ export default function App() {
   ].map(([key, label, icon]) => {
     const on = effectiveView === key
       || (key === 'sessions' && effectiveView === 'sessionDetail')
-      || (key === 'stock' && effectiveView === 'recount')
+      || (key === 'stock' && (effectiveView === 'recount' || effectiveView === 'siteStock'))
       || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity'))
       || (effectiveView === 'count' && ((key === 'transfers' && c && c.mode === 'transfer') || (key === 'deliveries' && c && c.mode === 'delivery') || (key === 'sessions' && c && (c.mode === 'out' || c.mode === 'back'))));
     return { label, icon, tone: on ? T.accent : T.textMuted, go: () => go(key) };
@@ -749,6 +749,12 @@ export default function App() {
 
       <div className="ws-scroll" style={{ flex: 1, overflow: 'auto', padding: '18px 16px 36px' }}>
         {effectiveView === 'stock' && (
+          <SitePickerScreen
+            sites={sites} products={products} openSessions={openSessions.length}
+            onSelectSite={(id) => { setStockVenue(id); go('siteStock'); }}
+          />
+        )}
+        {effectiveView === 'siteStock' && (
           <StockScreen
             sites={sites} sv={sv} stockVenue={stockVenue} setStockVenue={setStockVenue}
             statProducts={products.length} statLow={statLow} statOpen={openSessions.length}
@@ -756,6 +762,7 @@ export default function App() {
             onOpenRecount={() => setView('recount')}
             onGoProducts={() => go('products')}
             stockVenueName={venueName(sv)}
+            onBack={() => go('stock')}
           />
         )}
         {effectiveView === 'sessions' && (
@@ -791,7 +798,7 @@ export default function App() {
           <RecountScreen
             sites={sites} recount={recount} pickVenue={(id) => setRecount(r => ({ ...r, venue: id }))}
             rows={products.map(p => ({ id: p.id, name: p.name, current: stockAt(p, recount.venue) }))}
-            recountInput={recountInput} onSave={saveRecount} onBack={() => setView('stock')}
+            recountInput={recountInput} onSave={saveRecount} onBack={() => setView('siteStock')}
           />
         )}
         {effectiveView === 'deliveries' && (
@@ -1105,17 +1112,41 @@ function LoginScreen({ onSignIn, busy, error }) {
 }
 
 
-function StockScreen({ sites, sv, setStockVenue, statProducts, statLow, statOpen, ownerSections, noProducts, onOpenRecount, onGoProducts, stockVenueName }) {
+function SitePickerScreen({ sites, products, openSessions, onSelectSite }) {
   return (
     <div>
       <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 4 }}>Cellar stock</div>
-      <div style={{ fontSize: 14, lineHeight: 1.5, color: T.textSecondary, marginBottom: 14 }}>Live levels at {stockVenueName}. Updated from deliveries, sessions and recounts.</div>
-      <SegmentedTabs options={sites.map(v => ({
-        name: v.name, pick: () => setStockVenue(v.id),
-        edge: sv === v.id ? T.accent : 'transparent',
-        bg: sv === v.id ? 'rgba(145,132,217,.12)' : 'transparent',
-        tone: sv === v.id ? T.accentLight : T.textSecondary,
-      }))} />
+      <div style={{ fontSize: 14, lineHeight: 1.5, color: T.textSecondary, marginBottom: 16 }}>Pick a site to see its stock.</div>
+      {sites.map(v => {
+        let low = 0;
+        products.forEach(p => { if (p.parLevel && stockAt(p, v.id) < p.parLevel) low++; });
+        return (
+          <div key={v.id} onClick={() => onSelectSite(v.id)} style={{
+            background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 15, marginBottom: 8,
+            display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+          }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 16, fontWeight: 500 }}>{v.name}</div>
+              <div style={{ fontSize: 12, color: T.textMuted, marginTop: 3 }}>
+                {plural(products.length, 'product')}{low ? ' \u00b7 ' + low + ' below par' : ''}
+              </div>
+            </div>
+            <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function StockScreen({ sites, sv, setStockVenue, statProducts, statLow, statOpen, ownerSections, noProducts, onOpenRecount, onGoProducts, stockVenueName, onBack }) {
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 10, padding: 0 }}>
+        <i className="ph ph-arrow-left" /> All sites
+      </button>
+      <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 4 }}>{stockVenueName}</div>
+      <div style={{ fontSize: 14, lineHeight: 1.5, color: T.textSecondary, marginBottom: 14 }}>Live levels here. Updated from deliveries, sessions and recounts.</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 16 }}>
         <StatCard value={statProducts} label="Products" color={T.accentLight} />
         <StatCard value={statLow} label="Below par" color={T.warn} />
