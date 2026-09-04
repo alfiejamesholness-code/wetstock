@@ -28,6 +28,25 @@ function productFromRow(row) {
 // invoice layouts. It's a heuristic, not a guarantee — the review/edit step
 // further down the delivery flow is what catches what this gets wrong.
 const INVOICE_NOISE = /total|subtotal|vat|tax\b|invoice|delivery note|order no|account|balance|page \d/i;
+
+// A cheap plausibility check for a "product name" pulled off a noisy OCR
+// line - real names are made of actual words; garbled OCR tends to produce
+// currency figures, vowel-less letter fragments, or mostly-punctuation junk.
+function looksLikeNoise(name) {
+  if (/[£$€¢¥]/.test(name)) return true;
+  if (/\d+\.\d{1,2}(?!\d)/.test(name)) return true;
+  const letters = (name.match(/[a-zA-Z]/g) || []).length;
+  const nonSpace = name.replace(/\s+/g, '').length;
+  if (!nonSpace || letters / nonSpace < 0.6 || letters < 4) return true;
+  // Split on whitespace/punctuation only (not digits) - "330ml" should stay
+  // one token, since digit-bearing tokens (sizes/units) are almost always
+  // legitimate even without a vowel, unlike bare letter fragments like "Tr".
+  const words = name.split(/[\s(),.:;!?[\]{}'"-]+/).filter(w => w.length >= 2);
+  if (!words.length) return true;
+  const noVowelWords = words.filter(w => !/[aeiou]/i.test(w) && !/\d/.test(w));
+  return noVowelWords.length / words.length >= 0.4;
+}
+
 function parseInvoiceLines(text) {
   const out = [];
   text.split('\n').map(l => l.trim()).filter(Boolean).forEach(line => {
@@ -47,7 +66,7 @@ function parseInvoiceLines(text) {
       out.push({ name: (qtyFirst ? b : a).trim(), quantity: Number(qtyFirst ? a : b) });
     }
   });
-  return out.filter(l => l.name.length > 1 && l.quantity > 0 && l.quantity < 10000);
+  return out.filter(l => l.name.length > 1 && l.quantity > 0 && l.quantity < 10000 && !looksLikeNoise(l.name));
 }
 
 export default function App() {
