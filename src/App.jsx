@@ -743,11 +743,15 @@ export default function App() {
     setSessions(s => [ses, ...s]); setSheet(null); setActiveSessionId(id);
     setCount({ mode: 'out', sessionId: id, counts: {}, review: [], added: [] }); setView('count');
   }
-  function onAutoRead() {
+  function onAutoReadLabelClick(e) {
+    // The label's native click opens the camera directly, which iOS Safari
+    // requires (a JS-triggered .click() on a hidden input is unreliable
+    // there) - so validation has to cancel that default action instead of
+    // gating it beforehand.
+    if (invoiceReading) { e.preventDefault(); return; }
     const name = nameRef.current ? nameRef.current.value.trim() : '';
-    if (!name) { setSheetError('Add the supplier first.'); return; }
+    if (!name) { e.preventDefault(); setSheetError('Add the supplier first.'); return; }
     setDraft(d => ({ ...d, supplier: name, date: new Date().toISOString().slice(0, 10) }));
-    if (invoicePhotoRef.current) invoicePhotoRef.current.click();
   }
   async function onInvoicePhotoChosen(e) {
     const file = e.target.files && e.target.files[0];
@@ -976,11 +980,25 @@ export default function App() {
             Auto-read pulls line items and quantities, then asks you to confirm anything uncertain.
           </div>
           <ErrorText>{sheetError}</ErrorText>
-          <input ref={invoicePhotoRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={onInvoicePhotoChosen} />
+          <input
+            ref={invoicePhotoRef} id="invoice-photo-input" type="file" accept="image/*" capture="environment"
+            style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+            onChange={onInvoicePhotoChosen}
+          />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <OutlineButton icon="ph-camera" onClick={onAutoRead} disabled={invoiceReading}>
+            <label
+              htmlFor="invoice-photo-input"
+              onClick={onAutoReadLabelClick}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                width: '100%', padding: 15, borderRadius: 8, border: `1px solid ${T.accent}`,
+                background: 'transparent', color: T.accent, fontSize: 15, fontWeight: 500,
+                cursor: invoiceReading ? 'default' : 'pointer', opacity: invoiceReading ? 0.5 : 1,
+              }}
+            >
+              <i className="ph ph-camera" style={{ fontSize: 17 }} />
               {invoiceReading ? 'Reading invoice…' : 'Photograph and auto-read'}
-            </OutlineButton>
+            </label>
             <OutlineButton icon="ph-list-checks" onClick={onCountDelivery}>Count items by hand</OutlineButton>
           </div>
         </Sheet>
