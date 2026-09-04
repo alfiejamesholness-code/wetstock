@@ -28,14 +28,16 @@ export function EmptyState({ title, body, action }) {
   );
 }
 
-export function OutlineButton({ children, onClick, icon, style }) {
+export function OutlineButton({ children, onClick, icon, disabled, style }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         width: '100%', padding: 15, borderRadius: 8, border: `1px solid ${T.accent}`,
-        background: 'transparent', color: T.accent, fontSize: 15, fontWeight: 500, cursor: 'pointer',
+        background: 'transparent', color: T.accent, fontSize: 15, fontWeight: 500,
+        cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1,
         ...style,
       }}
     >

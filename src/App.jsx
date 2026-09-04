@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createWorker } from 'tesseract.js';
 import { T, CATEGORIES, UNITS, CASE_SIZES, DEFAULT_SITES, STORE, MONTHS, plural, fmt, monthKey, stockAt } from './constants';
 import { Toast, EmptyState, OutlineButton, FilledButton, SegmentedTabs, FieldLabel, inputStyle, ErrorText } from './components/Primitives';
 import { Header, Banner, TabBar } from './components/Chrome';
@@ -20,6 +21,33 @@ function productFromRow(row) {
     stock: row.stock || {},
     unsplitStock: row.unsplit_stock || {},
   };
+}
+
+// Free, on-device invoice reading: Tesseract gives us raw text, then this
+// picks out "quantity + product name" from each line by trying a few common
+// invoice layouts. It's a heuristic, not a guarantee — the review/edit step
+// further down the delivery flow is what catches what this gets wrong.
+const INVOICE_NOISE = /total|subtotal|vat|tax\b|invoice|delivery note|order no|account|balance|page \d/i;
+function parseInvoiceLines(text) {
+  const out = [];
+  text.split('\n').map(l => l.trim()).filter(Boolean).forEach(line => {
+    if (INVOICE_NOISE.test(line)) return;
+    let m;
+    if ((m = line.match(/^(\d{1,4})\s*[x×]\s*(.{2,})$/i))
+      || (m = line.match(/^(.{2,}?)\s*[x×]\s*(\d{1,4})$/i))) {
+      const [, a, b] = m;
+      const qtyFirst = /^\d+$/.test(a);
+      out.push({ name: (qtyFirst ? b : a).trim(), quantity: Number(qtyFirst ? a : b) });
+      return;
+    }
+    if ((m = line.match(/^(\d{1,4})\s+([a-zA-Z].{1,})$/))
+      || (m = line.match(/^([a-zA-Z].{1,}?)\s+(\d{1,4})$/))) {
+      const [, a, b] = m;
+      const qtyFirst = /^\d+$/.test(a);
+      out.push({ name: (qtyFirst ? b : a).trim(), quantity: Number(qtyFirst ? a : b) });
+    }
+  });
+  return out.filter(l => l.name.length > 1 && l.quantity > 0 && l.quantity < 10000);
 }
 
 export default function App() {
@@ -52,6 +80,7 @@ export default function App() {
   const [sheetError, setSheetError] = useState('');
   const [toastMsg, setToastMsg] = useState('');
   const [dismissedLowKey, setDismissedLowKey] = useState('');
+  const [invoiceReading, setInvoiceReading] = useState(false);
   const [search, setSearch] = useState('');
   const [openHistory, setOpenHistory] = useState({});
   const [activeSessionId, setActiveSessionId] = useState(null);
@@ -177,6 +206,7 @@ export default function App() {
   const siteRef = useRef(null);
   const emailRef = useRef(null);
   const cancelReasonRef = useRef(null);
+  const invoicePhotoRef = useRef(null);
   const recountInput = useRef({});
   const toastTimer = useRef(null);
   const scanTimer = useRef(null);
@@ -363,12 +393,12 @@ export default function App() {
   }
 
   // ---- invoice auto-read (the one bit of "real logic") ----
-  function autoRead(lines) {
+  function autoRead(lines, emptyMessage) {
     if (!lines || !lines.length) {
       setDraft(d => ({ ...d, hasPhoto: true, items: {}, review: [], added: [] }));
       setSheet(null); setView('count'); setPhotoTaken(true);
       setCount({ mode: 'delivery', counts: {}, review: [], added: [] });
-      toast('Nothing read — count by hand');
+      toast(emptyMessage || 'Nothing read — count by hand');
       return;
     }
     const norm = n => n.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -716,13 +746,25 @@ export default function App() {
   function onAutoRead() {
     const name = nameRef.current ? nameRef.current.value.trim() : '';
     if (!name) { setSheetError('Add the supplier first.'); return; }
-    const nextDraft = { ...draft, supplier: name, date: new Date().toISOString().slice(0, 10) };
-    setDraft(nextDraft);
-    // simulated invoice read: a couple of plausible lines drawn from existing products, or none.
-    const sampleLines = products.length
-      ? products.slice(0, Math.min(3, products.length)).map(p => ({ name: p.name, quantity: 1 + Math.floor(Math.random() * 4) }))
-      : [];
-    autoRead(sampleLines);
+    setDraft(d => ({ ...d, supplier: name, date: new Date().toISOString().slice(0, 10) }));
+    if (invoicePhotoRef.current) invoicePhotoRef.current.click();
+  }
+  async function onInvoicePhotoChosen(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    setInvoiceReading(true);
+    try {
+      const worker = await createWorker('eng');
+      const { data } = await worker.recognize(file);
+      await worker.terminate();
+      const lines = parseInvoiceLines(data.text || '');
+      autoRead(lines, lines.length ? undefined : "Couldn't make out any lines on that invoice — count by hand instead.");
+    } catch (err) {
+      autoRead([], "Couldn't read that invoice — " + (err.message || 'try again') + '. Count by hand instead.');
+    } finally {
+      setInvoiceReading(false);
+    }
   }
   function onCountDelivery() {
     const name = nameRef.current ? nameRef.current.value.trim() : '';
@@ -934,8 +976,11 @@ export default function App() {
             Auto-read pulls line items and quantities, then asks you to confirm anything uncertain.
           </div>
           <ErrorText>{sheetError}</ErrorText>
+          <input ref={invoicePhotoRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={onInvoicePhotoChosen} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <OutlineButton icon="ph-camera" onClick={onAutoRead}>Photograph and auto-read</OutlineButton>
+            <OutlineButton icon="ph-camera" onClick={onAutoRead} disabled={invoiceReading}>
+              {invoiceReading ? 'Reading invoice…' : 'Photograph and auto-read'}
+            </OutlineButton>
             <OutlineButton icon="ph-list-checks" onClick={onCountDelivery}>Count items by hand</OutlineButton>
           </div>
         </Sheet>
