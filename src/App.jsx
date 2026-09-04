@@ -788,9 +788,17 @@ export default function App() {
     setInvoiceReading(true);
     try {
       const worker = await createWorker('eng');
-      const { data } = await worker.recognize(file);
+      const { data } = await worker.recognize(file, {}, { blocks: true, text: true });
       await worker.terminate();
-      const lines = parseInvoiceLines(data.text || '');
+      // Tesseract scores its own confidence per recognized line - use that
+      // to drop what it wasn't sure about before the text ever reaches the
+      // parser, rather than trying to spot garbage after the fact.
+      const CONFIDENCE_MIN = 60;
+      const confidentLines = [];
+      (data.blocks || []).forEach(block => (block.paragraphs || []).forEach(para =>
+        (para.lines || []).forEach(line => { if (line.confidence >= CONFIDENCE_MIN) confidentLines.push(line.text); })));
+      const ocrText = (data.blocks && data.blocks.length) ? confidentLines.join('\n') : (data.text || '');
+      const lines = parseInvoiceLines(ocrText);
       await autoRead(lines, lines.length ? undefined : "Couldn't make out any lines on that invoice — count by hand instead.");
     } catch (err) {
       await autoRead([], "Couldn't read that invoice — " + (err.message || 'try again') + '. Count by hand instead.');
