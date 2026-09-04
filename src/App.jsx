@@ -163,6 +163,7 @@ export default function App() {
   const codeRef = useRef(null);
   const siteRef = useRef(null);
   const emailRef = useRef(null);
+  const cancelReasonRef = useRef(null);
   const recountInput = useRef({});
   const toastTimer = useRef(null);
   const scanTimer = useRef(null);
@@ -626,6 +627,16 @@ export default function App() {
     logActivity('Deleted product', target ? target.name : null);
   }
 
+  function cancelSession(id) {
+    const reason = cancelReasonRef.current ? cancelReasonRef.current.value.trim() : '';
+    if (!reason) { setSheetError('Give a reason for cancelling.'); return; }
+    const ses = sessions.find(x => x.id === id);
+    setSessions(s => s.filter(x => x.id !== id));
+    setSheet(null); setView('sessions');
+    toast('Session cancelled');
+    logActivity('Cancelled session', (ses ? ses.name + ' — ' : '') + reason, { sessionId: id, reason });
+  }
+
   async function onSaveProduct() {
     const name = nameRef.current ? nameRef.current.value.trim() : '';
     if (!name) { setSheetError('Give the product a name.'); return; }
@@ -857,7 +868,7 @@ export default function App() {
       {sheet === 'session' && (
         <Sheet title="New session" onClose={closeSheet} onBackdrop={closeSheet}>
           <FieldLabel>Event name</FieldLabel>
-          <input ref={nameRef} placeholder="Wedding \u2014 The Barn" style={{ ...inputStyle, marginBottom: 14 }} autoFocus />
+          <input ref={nameRef} placeholder={'Wedding \u2014 The Barn'} style={{ ...inputStyle, marginBottom: 14 }} autoFocus />
           <FieldLabel>Loading site</FieldLabel>
           <SegmentedTabs options={sites.map(v => ({
             name: v.name, pick: () => pickVenue(v.id),
@@ -1020,13 +1031,16 @@ export default function App() {
             </>
           ) : (
             <>
-              <div style={{ fontSize: 14, lineHeight: 1.55, color: T.textSecondary, marginBottom: 18 }}>
+              <div style={{ fontSize: 14, lineHeight: 1.55, color: T.textSecondary, marginBottom: 14 }}>
                 Cancel this session? Anything logged so far is discarded and stock goes back as it was.
               </div>
+              <FieldLabel>Reason for cancelling</FieldLabel>
+              <textarea ref={cancelReasonRef} rows={3} placeholder={'e.g. Event postponed by the client'} style={{ ...inputStyle, marginBottom: 10, resize: 'vertical', fontFamily: 'inherit' }} />
+              <ErrorText>{sheetError}</ErrorText>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={closeSheet} style={{ flex: 1, padding: 14, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, cursor: 'pointer' }}>Back</button>
                 <button
-                  onClick={() => { setSessions(s => s.filter(x => x.id !== confirmId)); setSheet(null); setView('sessions'); toast('Session cancelled'); }}
+                  onClick={() => cancelSession(confirmId)}
                   style={{ flex: 1, padding: 14, borderRadius: 8, border: 'none', background: T.danger, color: '#fff', fontWeight: 500, cursor: 'pointer' }}
                 >Cancel session</button>
               </div>
@@ -1100,11 +1114,11 @@ function LoginScreen({ onSignIn, busy, error }) {
         <FieldLabel>Email</FieldLabel>
         <input ref={emailRef} type="email" autoCapitalize="none" placeholder="you@site.com" style={{ ...inputStyle, marginBottom: 14 }} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
         <FieldLabel>Password</FieldLabel>
-        <input ref={pwRef} type="password" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" style={{ ...inputStyle, marginBottom: 14 }} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
+        <input ref={pwRef} type="password" placeholder={'\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'} style={{ ...inputStyle, marginBottom: 14 }} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
         <ErrorText>{error}</ErrorText>
         <FilledButton onClick={submit} disabled={busy}>{busy ? 'Signing in\u2026' : 'Sign in'}</FilledButton>
         <div style={{ fontSize: 12, color: T.textMuted, textAlign: 'center', marginTop: 16, lineHeight: 1.5 }}>
-          Accounts are set up by a manager \u2014 ask them if you don't have one yet.
+          {'Accounts are set up by a manager \u2014 ask them if you don\'t have one yet.'}
         </div>
       </div>
     </div>
