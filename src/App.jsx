@@ -224,16 +224,32 @@ export default function App() {
   }
 
   // ---- counting ----
+  function takeCap(c, pid, kind) {
+    // Loading a session out or transferring stock takes it away from a
+    // venue/the container, so those can't count more than is actually there.
+    // Deliveries and returning a session bring stock in, so no cap applies.
+    if (c.mode !== 'out' && c.mode !== 'transfer') return Infinity;
+    const p = products.find(x => x.id === pid);
+    if (!p) return Infinity;
+    const venue = c.mode === 'out' ? (sessions.find(x => x.id === c.sessionId) || {}).venue : STORE;
+    if (!venue) return Infinity;
+    return kind === 'case' ? ((p.unsplitStock && p.unsplitStock[venue]) || 0) : stockAt(p, venue);
+  }
   function bump(pid, delta, kind) {
     setCount(c => {
       if (!c) return c;
+      const cap = delta > 0 ? takeCap(c, pid, kind) : Infinity;
       if (kind === 'case') {
         const caseCounts = { ...(c.caseCounts || {}) };
-        caseCounts[pid] = Math.max(0, (caseCounts[pid] || 0) + delta);
+        const next = Math.max(0, (caseCounts[pid] || 0) + delta);
+        if (next > cap) { toast("That's all the cases there are"); return c; }
+        caseCounts[pid] = next;
         return { ...c, caseCounts };
       }
       const counts = { ...c.counts };
-      counts[pid] = Math.max(0, (counts[pid] || 0) + delta);
+      const next = Math.max(0, (counts[pid] || 0) + delta);
+      if (next > cap) { toast("That's all the stock there is"); return c; }
+      counts[pid] = next;
       return { ...c, counts };
     });
   }
