@@ -422,17 +422,17 @@ export default function App() {
     }
     const norm = n => n.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const tokens = n => norm(n).split(' ').filter(Boolean);
-    const items = {}; const review = []; const added = [];
-    let nextProducts = products.slice(); let matched = 0; let failed = 0;
+    const items = {}; const review = [];
+    const nextProducts = products.slice(); let matched = 0;
 
-    // Unmatched lines are real new products, so they're inserted into
-    // Supabase immediately rather than kept as fake local-only ids - the
-    // stock RPC calls below need a real row to attach to, otherwise they
-    // silently fail to save anything for them.
-    for (const line of lines) {
+    // Nothing gets created automatically anymore - a noisy OCR read can
+    // produce text that looks plausible enough to pass any text heuristic,
+    // so every unmatched line goes to manual review instead of being
+    // silently inserted as a new product.
+    lines.forEach(line => {
       const n = norm(line.name);
       const confident = nextProducts.find(p => norm(p.name).includes(n) || n.includes(norm(p.name)));
-      if (confident) { items[confident.id] = (items[confident.id] || 0) + line.quantity; matched++; continue; }
+      if (confident) { items[confident.id] = (items[confident.id] || 0) + line.quantity; matched++; return; }
       const ta = new Set(tokens(line.name));
       let best = null, bestScore = 0;
       nextProducts.forEach(p => {
@@ -441,35 +441,30 @@ export default function App() {
         const score = shared / Math.min(ta.size, tb.size);
         if (score > bestScore) { bestScore = score; best = p; }
       });
-      if (best && bestScore >= 0.34) {
-        review.push({ id: 'rv' + review.length, name: line.name, quantity: line.quantity, candidateId: best.id, candidateName: best.name });
-        continue;
-      }
-      const { data: row, error } = await supabase.from('products')
-        .insert({ name: line.name, category: 'Other', unit: 'Case' })
-        .select().single();
-      if (error) { failed++; continue; }
-      const np = productFromRow(row);
-      nextProducts = nextProducts.concat([np]);
-      added.push(np.name);
-      items[np.id] = line.quantity;
-    }
+      review.push({
+        id: 'rv' + review.length, name: line.name, quantity: line.quantity,
+        candidateId: best && bestScore >= 0.34 ? best.id : null,
+        candidateName: best && bestScore >= 0.34 ? best.name : null,
+      });
+    });
 
-    setProducts(nextProducts);
-    setDraft(d => ({ ...d, hasPhoto: true, items, review, added }));
+    setDraft(d => ({ ...d, hasPhoto: true, items, review, added: [] }));
     setSheet(null); setView('count'); setPhotoTaken(true);
-    setCount({ mode: 'delivery', counts: items, review, added });
+    setCount({ mode: 'delivery', counts: items, review, added: [] });
     const parts = ['Matched ' + matched];
-    if (added.length) parts.push(added.length + ' new');
     if (review.length) parts.push(review.length + ' to review');
-    if (failed) parts.push(failed + " couldn't be added");
     toast(parts.join(' \u00b7 '));
   }
 
-  async function resolveReview(id, asNew) {
+  async function resolveReview(id, action) {
     const item = count && (count.review || []).find(r => r.id === id);
     if (!item) return;
-    if (asNew) {
+    if (action === 'discard') {
+      setCount(c => (c ? { ...c, review: c.review.filter(r => r.id !== id) } : c));
+      toast('Discarded');
+      return;
+    }
+    if (action === 'new') {
       const { data: row, error } = await supabase.from('products')
         .insert({ name: item.name, category: 'Other', unit: 'Bottle' })
         .select().single();
@@ -488,7 +483,7 @@ export default function App() {
         return { ...c, counts, review: c.review.filter(r => r.id !== id) };
       });
     }
-    toast(asNew ? 'Added as a new product' : 'Merged into the existing product');
+    toast(action === 'new' ? 'Added as a new product' : 'Merged into the existing product');
   }
 
   function saveRecount() {
@@ -905,7 +900,12 @@ export default function App() {
             finishLabel={c.mode === 'out' ? 'Finish \u2014 container is out' : c.mode === 'back' ? 'Finish return' : c.mode === 'transfer' ? 'Record transfer' : 'Save delivery'}
             onFinish={finishCount}
             onBack={() => { setCount(null); setView(c.mode === 'delivery' ? 'deliveries' : c.mode === 'transfer' ? 'transfers' : 'sessionDetail'); }}
-            reviewItems={(c.review || []).map(r => ({ ...r, merge: () => resolveReview(r.id, false), asNew: () => resolveReview(r.id, true) }))}
+            reviewItems={(c.review || []).map(r => ({
+              ...r,
+              merge: () => resolveReview(r.id, 'merge'),
+              asNew: () => resolveReview(r.id, 'new'),
+              discard: () => resolveReview(r.id, 'discard'),
+            }))}
             autoAdded={c.added || []}
             onOpenScan={() => startScan()}
             onInc={(pid) => bump(pid, 1)} onDec={(pid) => bump(pid, -1)}
@@ -1421,21 +1421,28 @@ function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewI
 
       {reviewItems.map(r => (
         <div key={r.id} style={{ background: 'rgba(216,162,79,.08)', border: '1px solid rgba(216,162,79,.4)', borderRadius: 8, padding: 13, marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 500, color: T.warn, marginBottom: 5 }}>{'Needs review \u2014 possible duplicate'}</div>
+          <div style={{ fontSize: 13, fontWeight: 500, color: T.warn, marginBottom: 5 }}>
+            {r.candidateName ? 'Needs review \u2014 possible duplicate' : "Needs review \u2014 didn't recognize this"}
+          </div>
           <div style={{ fontSize: 14, marginBottom: 4 }}>{r.name} \u00d7 {r.quantity}</div>
           <div style={{ fontSize: 12, color: T.textSecondary, lineHeight: 1.5, marginBottom: 10 }}>
-            Similar to \u201c{r.candidateName}\u201d, already on the system. Not confident enough to merge on its own.
+            {r.candidateName
+              ? `Similar to "${r.candidateName}", already on the system. Not confident enough to merge on its own.`
+              : "Not matched to anything already on the system \u2014 could be a new product, or junk from a bad scan."}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={r.merge} style={{ flex: 1, padding: 10, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, cursor: 'pointer', fontSize: 13 }}>Same product</button>
+            {r.candidateName && (
+              <button onClick={r.merge} style={{ flex: 1, padding: 10, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, cursor: 'pointer', fontSize: 13 }}>Same product</button>
+            )}
             <button onClick={r.asNew} style={{ flex: 1, padding: 10, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, cursor: 'pointer', fontSize: 13 }}>It's new</button>
+            <button onClick={r.discard} style={{ flex: 1, padding: 10, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.danger, cursor: 'pointer', fontSize: 13 }}>Discard</button>
           </div>
         </div>
       ))}
 
       {autoAdded.length > 0 && (
         <div style={{ background: T.surface, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Added automatically</div>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Added as new products</div>
           <div style={{ fontSize: 13, color: T.textSecondary }}>{autoAdded.join(', ')}</div>
           <div style={{ fontSize: 11.5, color: T.textMuted, marginTop: 6 }}>Check their category, unit and barcode under Range when you get a moment.</div>
         </div>
