@@ -1010,11 +1010,11 @@ export default function App() {
             <>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 8 }}>
                 <div>
-                  <FieldLabel>Starting stock \u2014 cases</FieldLabel>
+                  <FieldLabel>{'Starting stock \u2014 cases'}</FieldLabel>
                   <input ref={caseAmountRef} type="number" placeholder="0" style={inputStyle} />
                 </div>
                 <div>
-                  <FieldLabel>Starting stock \u2014 individual</FieldLabel>
+                  <FieldLabel>{'Starting stock \u2014 individual'}</FieldLabel>
                   <input ref={amountRef} type="number" placeholder="0" style={inputStyle} />
                 </div>
               </div>
@@ -1312,7 +1312,7 @@ function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewI
 
       {reviewItems.map(r => (
         <div key={r.id} style={{ background: 'rgba(216,162,79,.08)', border: '1px solid rgba(216,162,79,.4)', borderRadius: 8, padding: 13, marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 500, color: T.warn, marginBottom: 5 }}>Needs review \u2014 possible duplicate</div>
+          <div style={{ fontSize: 13, fontWeight: 500, color: T.warn, marginBottom: 5 }}>{'Needs review \u2014 possible duplicate'}</div>
           <div style={{ fontSize: 14, marginBottom: 4 }}>{r.name} \u00d7 {r.quantity}</div>
           <div style={{ fontSize: 12, color: T.textSecondary, lineHeight: 1.5, marginBottom: 10 }}>
             Similar to \u201c{r.candidateName}\u201d, already on the system. Not confident enough to merge on its own.
@@ -1365,13 +1365,13 @@ function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewI
                 <div style={{ padding: '0 13px 13px', display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span style={{ fontSize: 13, color: T.textSecondary, flex: 1 }}>Cases (of {p.caseSize})</span>
-                    <button onClick={() => onDecCase(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.textSecondary, fontSize: 17, cursor: 'pointer', flex: 'none' }}>\u2212</button>
+                    <button onClick={() => onDecCase(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.textSecondary, fontSize: 17, cursor: 'pointer', flex: 'none' }}>{'\u2212'}</button>
                     <div style={{ width: 26, textAlign: 'center', fontSize: 17, fontWeight: 500, color: p.caseQty ? T.accentLight : T.placeholder }}>{p.caseQty}</div>
                     <button onClick={() => onIncCase(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: `1px solid ${T.accent}`, background: 'rgba(145,132,217,.12)', color: T.accentLight, fontSize: 17, cursor: 'pointer', flex: 'none' }}>+</button>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span style={{ fontSize: 13, color: T.textSecondary, flex: 1 }}>Individual (split)</span>
-                    <button onClick={() => onDec(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.textSecondary, fontSize: 17, cursor: 'pointer', flex: 'none' }}>\u2212</button>
+                    <button onClick={() => onDec(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.textSecondary, fontSize: 17, cursor: 'pointer', flex: 'none' }}>{'\u2212'}</button>
                     <div style={{ width: 26, textAlign: 'center', fontSize: 17, fontWeight: 500, color: p.qty ? T.accentLight : T.placeholder }}>{p.qty}</div>
                     <button onClick={() => onInc(p.id)} style={{ width: 40, height: 40, borderRadius: 8, border: `1px solid ${T.accent}`, background: 'rgba(145,132,217,.12)', color: T.accentLight, fontSize: 17, cursor: 'pointer', flex: 'none' }}>+</button>
                   </div>
@@ -1402,7 +1402,7 @@ function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewI
             <button onClick={(e) => { e.stopPropagation(); onDec(p.id); }} style={{
               width: 44, height: 44, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent',
               color: T.textSecondary, fontSize: 18, cursor: 'pointer', flex: 'none',
-            }}>\u2212</button>
+            }}>{'\u2212'}</button>
             <div style={{ width: 30, textAlign: 'center', fontSize: 21, fontWeight: 500, color: on ? T.accentLight : T.placeholder }}>{p.qty}</div>
             <button onClick={(e) => { e.stopPropagation(); onInc(p.id); }} style={{
               width: 44, height: 44, borderRadius: 8, border: `1px solid ${T.accent}`, background: 'rgba(145,132,217,.12)',
@@ -1533,7 +1533,7 @@ function ProductsScreen({ search, onSearch, productList, onNewProduct, onEdit, o
       <div style={{ marginBottom: 14 }}>
         <OutlineButton icon="ph-plus" onClick={onNewProduct}>Add product</OutlineButton>
       </div>
-      {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '8px 0' }}>Loading products\u2026</div>}
+      {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '8px 0' }}>{'Loading products\u2026'}</div>}
       {!loading && !error && productList.length === 0 && <EmptyState title="No products found" body="Try a different search, or add a new product." />}
       {sections.map((s, si) => (
         <div key={si}>
@@ -1750,7 +1750,7 @@ function ActivityScreen({ items, loading, error, onBack }) {
           Couldn't reach the database: {error}
         </div>
       )}
-      {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '8px 0' }}>Loading\u2026</div>}
+      {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '8px 0' }}>{'Loading\u2026'}</div>}
       {!loading && !error && items.length === 0 && <EmptyState title="Nothing logged yet" body="Actions like adding a product, or loading a session out and back, will show up here." />}
 
       {movements.length > 0 && (
