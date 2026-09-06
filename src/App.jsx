@@ -293,9 +293,15 @@ export default function App() {
     if (c.mode !== 'out' && c.mode !== 'transfer') return Infinity;
     const p = products.find(x => x.id === pid);
     if (!p) return Infinity;
-    const venue = c.mode === 'out' ? (sessions.find(x => x.id === c.sessionId) || {}).venue : STORE;
+    const ses = c.mode === 'out' ? sessions.find(x => x.id === c.sessionId) : null;
+    const venue = c.mode === 'out' ? (ses || {}).venue : STORE;
     if (!venue) return Infinity;
-    return kind === 'case' ? ((p.unsplitStock && p.unsplitStock[venue]) || 0) : stockAt(p, venue);
+    const current = kind === 'case' ? ((p.unsplitStock && p.unsplitStock[venue]) || 0) : stockAt(p, venue);
+    // A multi-day session re-adding to an already-out load isn't limited to
+    // what's currently left at the venue - what it already took out this
+    // session is still "its" stock, so that headroom counts too.
+    const already = ses ? (((kind === 'case' ? ses.outCases : ses.out) || {})[pid] || 0) : 0;
+    return current + already;
   }
   function bump(pid, delta, kind) {
     setCount(c => {
@@ -340,16 +346,16 @@ export default function App() {
     if (!c) return;
     if (c.review && c.review.length) { toast('Resolve the review item first'); return; }
     const nextProducts = products.map(p => ({ ...p, stock: { ...p.stock }, unsplitStock: { ...p.unsplitStock } }));
-    const apply = (venue, sign) => nextProducts.forEach(p => {
-      const q = c.counts[p.id] || 0;
+    const apply = (venue, sign, source) => nextProducts.forEach(p => {
+      const q = (source || c.counts)[p.id] || 0;
       if (q) {
         p.stock[venue] = Math.max(0, (p.stock[venue] || 0) + sign * q);
         supabase.rpc('update_stock', { p_product_id: p.id, p_site_id: venue, p_delta: sign * q })
           .then(({ error }) => { if (error) toast("Couldn't save stock change: " + error.message); });
       }
     });
-    const applyCases = (venue, sign) => nextProducts.forEach(p => {
-      const q = (c.caseCounts && c.caseCounts[p.id]) || 0;
+    const applyCases = (venue, sign, source) => nextProducts.forEach(p => {
+      const q = (source || c.caseCounts || {})[p.id] || 0;
       if (q) {
         p.unsplitStock[venue] = Math.max(0, (p.unsplitStock[venue] || 0) + sign * q);
         supabase.rpc('update_unsplit_stock', { p_product_id: p.id, p_site_id: venue, p_delta: sign * q })
@@ -385,15 +391,27 @@ export default function App() {
     const nextSessions = sessions.map(x => ({ ...x }));
     const ses = nextSessions.find(x => x.id === c.sessionId);
     if (c.mode === 'out') {
+      // Re-opening an already-out session (e.g. a multi-day event, taking
+      // more out on day 2 or 3) must only take the *new* amount from stock -
+      // what it already took out on an earlier day was deducted then.
+      const prevOut = ses.out || {}; const prevOutCases = ses.outCases || {};
+      const deltaCounts = {}; const deltaCases = {};
+      new Set([...Object.keys(c.counts), ...Object.keys(prevOut)]).forEach(pid => {
+        deltaCounts[pid] = (c.counts[pid] || 0) - (prevOut[pid] || 0);
+      });
+      new Set([...Object.keys(c.caseCounts || {}), ...Object.keys(prevOutCases)]).forEach(pid => {
+        deltaCases[pid] = ((c.caseCounts || {})[pid] || 0) - (prevOutCases[pid] || 0);
+      });
+      const wasAlreadyOut = ses.status === 'out';
       ses.out = { ...c.counts };
       ses.outCases = { ...(c.caseCounts || {}) };
       ses.status = 'out';
-      apply(ses.venue, -1); applyCases(ses.venue, -1);
+      apply(ses.venue, -1, deltaCounts); applyCases(ses.venue, -1, deltaCases);
       setProducts(nextProducts); setSessions(nextSessions); setCount(null);
       setView('sessionDetail'); setActiveSessionId(ses.id);
-      toast('Container is out');
-      const items = itemsFromCounts(c.counts, c.caseCounts, products);
-      logActivity('Loaded out', ses.name + ' \u2014 ' + summarizeItems(items),
+      toast(wasAlreadyOut ? 'Added to the load' : 'Container is out');
+      const items = itemsFromCounts(deltaCounts, deltaCases, products);
+      logActivity(wasAlreadyOut ? 'Added to load' : 'Loaded out', ses.name + ' \u2014 ' + summarizeItems(items),
         { sessionId: ses.id, session: ses.name, venue: venueName(ses.venue), mode: 'out', items });
     } else {
       ses.back = { ...c.counts };
@@ -515,7 +533,7 @@ export default function App() {
   const isManager = !!profile && profile.role === 'manager';
   const role = isManager && !previewStaff ? 'admin' : 'employee';
   const isAdmin = role === 'admin';
-  const effectiveView = isAdmin ? view : (['sessions', 'sessionDetail', 'count'].includes(view) ? view : 'sessions');
+  const effectiveView = isAdmin ? view : (['sessions', 'sessionDetail', 'count', 'stock', 'siteStock'].includes(view) ? view : 'sessions');
   const openSessions = sessions.filter(x => x.status !== 'complete');
   const active = openSessions[0];
   const sv = stockVenue;
@@ -558,8 +576,9 @@ export default function App() {
     const caseQty = (c.caseCounts && c.caseCounts[p.id]) || 0;
     let meta = p.unit;
     if (c.mode === 'out' && ses) {
-      const availCases = (p.unsplitStock && p.unsplitStock[ses.venue]) || 0;
-      meta = p.unit + ' \u00b7 available ' + stockAt(p, ses.venue) + (p.caseSize ? ' + ' + availCases + ' case' + (availCases === 1 ? '' : 's') : '');
+      const availUnits = stockAt(p, ses.venue) + ((ses.out || {})[p.id] || 0);
+      const availCases = ((p.unsplitStock && p.unsplitStock[ses.venue]) || 0) + ((ses.outCases || {})[p.id] || 0);
+      meta = p.unit + ' \u00b7 available ' + availUnits + (p.caseSize ? ' + ' + availCases + ' case' + (availCases === 1 ? '' : 's') : '');
     }
     if (c.mode === 'back' && ses) {
       meta = 'went out: ' + (ses.out[p.id] || 0) + (p.caseSize ? ' + ' + ((ses.outCases && ses.outCases[p.id]) || 0) + ' cases' : '');
@@ -567,7 +586,7 @@ export default function App() {
     if (c.mode === 'transfer') meta = p.unit + ' \u00b7 in container ' + stockAt(p, STORE);
     return { id: p.id, name: p.name, meta, qty, caseQty, hasCase: !!p.caseSize, caseSize: p.caseSize, isFcg: p.owner === 'fcg' };
   });
-  const countTitle = c ? (c.mode === 'out' ? 'Loading out' : c.mode === 'back' ? 'Logging return' : c.mode === 'transfer' ? 'Transfer out' : 'Count delivery') : '';
+  const countTitle = c ? (c.mode === 'out' ? (ses && ses.status === 'out' ? 'Adding to load' : 'Loading out') : c.mode === 'back' ? 'Logging return' : c.mode === 'transfer' ? 'Transfer out' : 'Count delivery') : '';
   const countSub = !c ? '' : c.mode === 'transfer'
     ? 'Container \u2192 ' + venueName((draft && draft.site) || '') + ' \u00b7 tap a row to add one, or scan'
     : c.mode === 'delivery'
@@ -650,18 +669,21 @@ export default function App() {
 
   const detailSession = view === 'sessionDetail' ? (sessions.find(x => x.id === activeSessionId) || active) : null;
 
+  const tabOn = (key) => effectiveView === key
+    || (key === 'sessions' && effectiveView === 'sessionDetail')
+    || (key === 'stock' && (effectiveView === 'recount' || effectiveView === 'siteStock'))
+    || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity'))
+    || (effectiveView === 'count' && ((key === 'transfers' && c && c.mode === 'transfer') || (key === 'deliveries' && c && c.mode === 'delivery') || (key === 'sessions' && c && (c.mode === 'out' || c.mode === 'back'))));
   const tabs = [
     ['stock', 'Stock', 'ph-stack'], ['sessions', 'Sessions', 'ph-clipboard-text'],
     ['transfers', 'Transfers', 'ph-arrows-left-right'], ['deliveries', 'Goods in', 'ph-truck'],
     ['history', 'History', 'ph-clock-counter-clockwise'], ['more', 'More', 'ph-dots-three-circle'],
-  ].map(([key, label, icon]) => {
-    const on = effectiveView === key
-      || (key === 'sessions' && effectiveView === 'sessionDetail')
-      || (key === 'stock' && (effectiveView === 'recount' || effectiveView === 'siteStock'))
-      || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity'))
-      || (effectiveView === 'count' && ((key === 'transfers' && c && c.mode === 'transfer') || (key === 'deliveries' && c && c.mode === 'delivery') || (key === 'sessions' && c && (c.mode === 'out' || c.mode === 'back'))));
-    return { label, icon, tone: on ? T.accent : T.textMuted, go: () => go(key) };
-  });
+  ].map(([key, label, icon]) => ({ label, icon, tone: tabOn(key) ? T.accent : T.textMuted, go: () => go(key) }));
+  // Staff get a read-only look at stock (so they can plan ahead of a
+  // session) plus their own sessions - not the management-only tabs.
+  const staffTabs = [
+    ['stock', 'Stock', 'ph-stack'], ['sessions', 'Sessions', 'ph-clipboard-text'],
+  ].map(([key, label, icon]) => ({ label, icon, tone: tabOn(key) ? T.accent : T.textMuted, go: () => go(key) }));
 
   // ================= handlers referenced by JSX =================
   // A manager can preview the staff view (harmless, since they still have
@@ -878,6 +900,7 @@ export default function App() {
         )}
         {effectiveView === 'siteStock' && (
           <StockScreen
+            isAdmin={isAdmin}
             sites={sites} sv={sv} stockVenue={stockVenue} setStockVenue={setStockVenue}
             statProducts={products.length} statLow={statLow} statOpen={openSessions.length}
             ownerSections={ownerSections} noProducts={products.length === 0}
@@ -899,13 +922,14 @@ export default function App() {
             session={detailSession} venueName={venueName} fmt={fmt}
             onBack={() => setView('sessions')}
             onPrimary={() => openCount(detailSession.status === 'loading' ? 'out' : 'back', detailSession.id)}
+            onAddMore={() => openCount('out', detailSession.id)}
             onCancel={() => openSheet('confirm', { confirmId: detailSession.id, confirmKind: 'session' })}
           />
         )}
         {effectiveView === 'count' && c && (
           <CountScreen
             title={countTitle} sub={countSub} tiles={countTiles}
-            finishLabel={c.mode === 'out' ? 'Finish \u2014 container is out' : c.mode === 'back' ? 'Finish return' : c.mode === 'transfer' ? 'Record transfer' : 'Save delivery'}
+            finishLabel={c.mode === 'out' ? (ses && ses.status === 'out' ? 'Save added items' : 'Finish \u2014 container is out') : c.mode === 'back' ? 'Finish return' : c.mode === 'transfer' ? 'Record transfer' : 'Save delivery'}
             onFinish={finishCount}
             onBack={() => { setCount(null); setView(c.mode === 'delivery' ? 'deliveries' : c.mode === 'transfer' ? 'transfers' : 'sessionDetail'); }}
             reviewItems={(c.review || []).map(r => ({
@@ -978,7 +1002,7 @@ export default function App() {
         )}
       </div>
 
-      {isAdmin && <TabBar tabs={tabs} />}
+      <TabBar tabs={isAdmin ? tabs : staffTabs} />
       <Toast message={toastMsg} />
 
       {sheet === 'session' && (
@@ -1286,7 +1310,7 @@ function SitePickerScreen({ sites, products, openSessions, onSelectSite }) {
   );
 }
 
-function StockScreen({ sites, sv, setStockVenue, statProducts, statLow, statOpen, ownerSections, noProducts, onOpenRecount, onGoProducts, stockVenueName, onBack }) {
+function StockScreen({ isAdmin, sites, sv, setStockVenue, statProducts, statLow, statOpen, ownerSections, noProducts, onOpenRecount, onGoProducts, stockVenueName, onBack }) {
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 10, padding: 0 }}>
@@ -1299,13 +1323,13 @@ function StockScreen({ sites, sv, setStockVenue, statProducts, statLow, statOpen
         <StatCard value={statLow} label="Below par" color={T.warn} />
         <StatCard value={statOpen} label="Open" color={T.text} />
       </div>
-      <OutlineButton icon="ph-clipboard-text" onClick={onOpenRecount}>Recount stock</OutlineButton>
+      {isAdmin && <OutlineButton icon="ph-clipboard-text" onClick={onOpenRecount}>Recount stock</OutlineButton>}
       {noProducts && (
         <div style={{ marginTop: 16 }}>
           <EmptyState
             title="No products yet"
-            body="Add what you carry, then stock levels build up from deliveries and sessions."
-            action={<OutlineButton icon="ph-plus" onClick={onGoProducts} style={{ width: 'auto', display: 'inline-flex', padding: '13px 20px', fontSize: 14 }}>Add your first product</OutlineButton>}
+            body={isAdmin ? 'Add what you carry, then stock levels build up from deliveries and sessions.' : 'Nothing has been added to the range yet.'}
+            action={isAdmin ? <OutlineButton icon="ph-plus" onClick={onGoProducts} style={{ width: 'auto', display: 'inline-flex', padding: '13px 20px', fontSize: 14 }}>Add your first product</OutlineButton> : null}
           />
         </div>
       )}
@@ -1386,7 +1410,8 @@ function SessionsScreen({ isAdmin, openSessions, venueName, fmt, onOpen, onNewSe
   );
 }
 
-function SessionDetailScreen({ session, venueName, fmt, onBack, onPrimary, onCancel }) {
+function SessionDetailScreen({ session, venueName, fmt, onBack, onPrimary, onAddMore, onCancel }) {
+  const isOut = session.status === 'out';
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
@@ -1405,7 +1430,17 @@ function SessionDetailScreen({ session, venueName, fmt, onBack, onPrimary, onCan
           <i className={`ph ${session.status === 'loading' ? 'ph-arrow-up-right' : 'ph-arrow-down-left'}`} />
           {session.status === 'loading' ? 'Log items going out' : 'Log items coming back'}
         </FilledButton>
+        {isOut && (
+          <OutlineButton icon="ph-plus" onClick={onAddMore} style={{ marginTop: 8 }}>
+            Add more items to this load
+          </OutlineButton>
+        )}
       </div>
+      {isOut && (
+        <div style={{ fontSize: 11.5, color: T.textMuted, lineHeight: 1.5, margin: '10px 2px 0' }}>
+          For events running over several days \u2014 add to what's out any time before it comes back.
+        </div>
+      )}
       <button onClick={onCancel} style={{ background: 'none', border: 'none', color: T.textMuted, fontSize: 13, cursor: 'pointer', marginTop: 16, padding: 0 }}>
         Cancel session
       </button>

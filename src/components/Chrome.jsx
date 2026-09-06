@@ -66,7 +66,7 @@ export function TabBar({ tabs }) {
   return (
     <div style={{
       background: T.chrome, borderTop: '1px solid rgba(233,233,237,.09)', flex: 'none',
-      display: 'grid', gridTemplateColumns: 'repeat(6,1fr)',
+      display: 'grid', gridTemplateColumns: `repeat(${tabs.length},1fr)`,
       paddingBottom: 'env(safe-area-inset-bottom)',
     }}>
       {tabs.map((t, i) => (
