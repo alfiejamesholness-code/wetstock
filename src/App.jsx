@@ -1378,6 +1378,7 @@ function SitePickerScreen({ sites, products, openSessions, onSelectSite }) {
 }
 
 function StockScreen({ isAdmin, sites, sv, setStockVenue, statProducts, statLow, statOpen, ownerSections, noProducts, onOpenRecount, onGoProducts, stockVenueName, onBack }) {
+  const [collapsed, setCollapsed] = useState({});
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 10, padding: 0 }}>
@@ -1408,13 +1409,21 @@ function StockScreen({ isAdmin, sites, sv, setStockVenue, statProducts, statLow,
               <div style={{ fontSize: 12, color: T.textMuted, marginTop: 3 }}>{o.note}</div>
             </div>
           )}
-          {o.groups.map((g, gi) => (
+          {o.groups.map((g, gi) => {
+            const key = i + '-' + gi;
+            const isCollapsed = !!collapsed[key];
+            return (
             <div key={gi}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '18px 2px 10px' }}>
+              <div
+                onClick={() => setCollapsed(c => ({ ...c, [key]: !c[key] }))}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '18px 2px 10px', cursor: 'pointer' }}
+              >
+                <i className={`ph ${isCollapsed ? 'ph-caret-right' : 'ph-caret-down'}`} style={{ fontSize: 12, color: T.textMuted }} />
                 <span style={{ fontSize: 10, fontWeight: 500, letterSpacing: '.1em', textTransform: 'uppercase', color: T.textMuted }}>{g.cat}</span>
+                <span style={{ fontSize: 10, color: T.textMuted }}>({g.items.length})</span>
                 <span style={{ flex: 1, height: 1, background: 'linear-gradient(to right,rgba(233,233,237,.13),transparent)' }} />
               </div>
-              {g.items.map(p => (
+              {!isCollapsed && g.items.map(p => (
                 <div key={p.id} style={{ background: T.card, border: `1px solid ${p.edge}`, borderRadius: 8, padding: 13, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -1427,7 +1436,8 @@ function StockScreen({ isAdmin, sites, sv, setStockVenue, statProducts, statLow,
                 </div>
               ))}
             </div>
-          ))}
+            );
+          })}
         </div>
       ))}
     </div>
