@@ -20,7 +20,14 @@ function productFromRow(row) {
     caseSize: row.case_size || null,
     stock: row.stock || {},
     unsplitStock: row.unsplit_stock || {},
+    // null/empty = carried at every site (backward compatible default);
+    // otherwise an array of site ids this product is actually in range for.
+    sites: (row.sites && row.sites.length) ? row.sites : null,
   };
+}
+
+function productAppliesTo(p, siteId) {
+  return !p.sites || !p.sites.length || p.sites.includes(siteId);
 }
 
 // Free, on-device invoice reading: Tesseract gives us raw text, then this
@@ -92,6 +99,7 @@ export default function App() {
   const [recipients, setRecipients] = useState([]);
   const [stockVenue, setStockVenue] = useState('lc');
   const [productOwner, setProductOwner] = useState('house');
+  const [productSites, setProductSites] = useState([]);
   const [count, setCount] = useState(null);
   const [recount, setRecount] = useState({ venue: 'lc' });
   const [draft, setDraft] = useState(null);
@@ -483,8 +491,11 @@ export default function App() {
       return;
     }
     if (action === 'new') {
+      // A genuinely new product discovered via a delivery is scoped to that
+      // delivery's own site by default, not silently made available
+      // everywhere - it can be widened later from the product's edit form.
       const { data: row, error } = await supabase.from('products')
-        .insert({ name: item.name, category: 'Other', unit: 'Bottle' })
+        .insert({ name: item.name, category: 'Other', unit: 'Bottle', sites: draft && draft.venue ? [draft.venue] : null })
         .select().single();
       if (error) { toast("Couldn't add that product: " + error.message); return; }
       const np = productFromRow(row);
@@ -540,7 +551,9 @@ export default function App() {
 
   const groupsFor = (list) => {
     const byCat = {};
-    list.forEach(p => { (byCat[p.category] = byCat[p.category] || []).push(p); });
+    // Being in the range at one site doesn't mean it's carried at another -
+    // only show what's actually assigned to the site currently being viewed.
+    list.filter(p => productAppliesTo(p, sv)).forEach(p => { (byCat[p.category] = byCat[p.category] || []).push(p); });
     return CATEGORIES.filter(c => byCat[c]).map(cat => ({
       cat,
       items: byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name)).map(p => {
@@ -559,19 +572,30 @@ export default function App() {
   };
   const houseProducts = products.filter(p => p.owner !== 'fcg');
   const fcgProducts = products.filter(p => p.owner === 'fcg');
-  const split = fcgProducts.length > 0;
+  const split = fcgProducts.some(p => productAppliesTo(p, sv));
   const ownerSections = split
     ? [
-        { label: 'Relish stock', note: plural(houseProducts.length, 'product'), showHeader: true, groups: groupsFor(houseProducts) },
+        { label: 'Relish stock', note: plural(houseProducts.filter(p => productAppliesTo(p, sv)).length, 'product'), showHeader: true, groups: groupsFor(houseProducts) },
         { label: 'Fizzy Cherry (FCG)', note: 'invoiced separately when transferred', showHeader: true, groups: groupsFor(fcgProducts) },
       ].filter(x => x.groups.length)
     : [{ label: '', note: '', showHeader: false, groups: groupsFor(products) }];
   let statLow = 0;
-  products.forEach(p => { if (p.parLevel && stockAt(p, sv) < p.parLevel) statLow++; });
+  products.forEach(p => { if (p.parLevel && productAppliesTo(p, sv) && stockAt(p, sv) < p.parLevel) statLow++; });
 
   const c = count;
   const ses = c && c.sessionId ? sessions.find(x => x.id === c.sessionId) : null;
-  const countTiles = !c ? [] : products.map(p => {
+  // 'out'/delivery/transfer are taking stock somewhere specific, so only
+  // offer products actually in that site's range. 'back' isn't filtered -
+  // it just shows what this session already has out (ses.out), which was
+  // already site-appropriate when it left; re-filtering it by whatever the
+  // product's site assignment happens to be *now* could hide something
+  // still genuinely due back if a product's range changed mid-session.
+  const countVenue = c && c.mode === 'out' && ses ? ses.venue
+    : c && c.mode === 'delivery' ? ((draft && draft.venue) || STORE)
+    : c && c.mode === 'transfer' ? (draft && draft.site)
+    : null;
+  const countProducts = countVenue ? products.filter(p => productAppliesTo(p, countVenue)) : products;
+  const countTiles = !c ? [] : countProducts.map(p => {
     const qty = (c.counts && c.counts[p.id]) || 0;
     const caseQty = (c.caseCounts && c.caseCounts[p.id]) || 0;
     let meta = p.unit;
@@ -660,6 +684,7 @@ export default function App() {
       nameRef.current.value = editingProduct.name;
       filledFlag.current = true;
       setProductOwner(editingProduct.owner === 'fcg' ? 'fcg' : 'house');
+      setProductSites(editingProduct.sites || sites.map(s => s.id));
       if (catRef.current) catRef.current.value = editingProduct.category;
       if (unitRef.current) unitRef.current.value = editingProduct.unit;
       if (caseSizeRef.current) caseSizeRef.current.value = editingProduct.caseSize || '';
@@ -746,9 +771,13 @@ export default function App() {
     logActivity('Cancelled session', (ses ? ses.name + ' — ' : '') + reason, { sessionId: id, reason });
   }
 
+  function toggleProductSite(id) {
+    setProductSites(cur => cur.includes(id) ? cur.filter(x => x !== id) : cur.concat([id]));
+  }
   async function onSaveProduct() {
     const name = nameRef.current ? nameRef.current.value.trim() : '';
     if (!name) { setSheetError('Give the product a name.'); return; }
+    if (!productSites.length) { setSheetError('Pick at least one site this is carried at.'); return; }
     const cat = catRef.current ? catRef.current.value : 'Other';
     const unit = unitRef.current ? unitRef.current.value : 'Bottle';
     const parRaw = parRef.current ? parRef.current.value.trim() : '';
@@ -756,7 +785,11 @@ export default function App() {
     const owner = productOwner === 'fcg' ? 'fcg' : 'house';
     const caseSizeRaw = caseSizeRef.current ? caseSizeRef.current.value : '';
     const caseSize = caseSizeRaw ? Number(caseSizeRaw) : null;
-    const row = { name, category: cat, unit, owner, par_level: par, case_size: caseSize };
+    // Storing null when every current site is picked (rather than the
+    // literal list) means a site added later still carries this product,
+    // matching how it behaved before this field existed.
+    const sitesToSave = productSites.length >= sites.length ? null : productSites;
+    const row = { name, category: cat, unit, owner, par_level: par, case_size: caseSize, sites: sitesToSave };
 
     if (editingProduct) {
       const { data, error } = await supabase.from('products').update(row).eq('id', editingProduct.id).select().single();
@@ -902,8 +935,8 @@ export default function App() {
           <StockScreen
             isAdmin={isAdmin}
             sites={sites} sv={sv} stockVenue={stockVenue} setStockVenue={setStockVenue}
-            statProducts={products.length} statLow={statLow} statOpen={openSessions.length}
-            ownerSections={ownerSections} noProducts={products.length === 0}
+            statProducts={products.filter(p => productAppliesTo(p, sv)).length} statLow={statLow} statOpen={openSessions.length}
+            ownerSections={ownerSections} noProducts={!products.some(p => productAppliesTo(p, sv))}
             onOpenRecount={() => setView('recount')}
             onGoProducts={() => go('products')}
             stockVenueName={venueName(sv)}
@@ -964,7 +997,7 @@ export default function App() {
         {effectiveView === 'products' && (
           <ProductsScreen
             search={search} onSearch={setSearch} productList={productList}
-            onNewProduct={() => openSheet('product', { editing: null, productOwner: 'house' })}
+            onNewProduct={() => { setProductSites(sites.map(s => s.id)); openSheet('product', { editing: null, productOwner: 'house' }); }}
             onEdit={(id) => openSheet('product', { editing: id })}
             onDelete={(id) => openSheet('confirm', { confirmId: id, confirmKind: 'product' })}
             loading={productsLoading} error={productsError}
@@ -1147,6 +1180,16 @@ export default function App() {
           <div style={{ fontSize: 12, color: T.textMuted, marginTop: -10, marginBottom: 16, lineHeight: 1.5 }}>
             Fizzy Cherry stock sits in the container but is invoiced separately when it moves to a site.
           </div>
+          <FieldLabel>Carried at</FieldLabel>
+          <SegmentedTabs options={sites.map(v => ({
+            name: v.name, pick: () => toggleProductSite(v.id),
+            edge: productSites.includes(v.id) ? T.accent : 'transparent',
+            bg: productSites.includes(v.id) ? 'rgba(145,132,217,.12)' : 'transparent',
+            tone: productSites.includes(v.id) ? T.accentLight : T.textSecondary,
+          }))} />
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 10, marginBottom: 16, lineHeight: 1.5 }}>
+            Only shows up in stock and sessions for the sites picked here.
+          </div>
           {!editingProduct && (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 8 }}>
@@ -1289,8 +1332,9 @@ function SitePickerScreen({ sites, products, openSessions, onSelectSite }) {
       <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 4 }}>Cellar stock</div>
       <div style={{ fontSize: 14, lineHeight: 1.5, color: T.textSecondary, marginBottom: 16 }}>Pick a site to see its stock.</div>
       {sites.map(v => {
+        const here = products.filter(p => productAppliesTo(p, v.id));
         let low = 0;
-        products.forEach(p => { if (p.parLevel && stockAt(p, v.id) < p.parLevel) low++; });
+        here.forEach(p => { if (p.parLevel && stockAt(p, v.id) < p.parLevel) low++; });
         return (
           <div key={v.id} onClick={() => onSelectSite(v.id)} style={{
             background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 15, marginBottom: 8,
@@ -1299,7 +1343,7 @@ function SitePickerScreen({ sites, products, openSessions, onSelectSite }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 16, fontWeight: 500 }}>{v.name}</div>
               <div style={{ fontSize: 12, color: T.textMuted, marginTop: 3 }}>
-                {plural(products.length, 'product')}{low ? ' \u00b7 ' + low + ' below par' : ''}
+                {plural(here.length, 'product')}{low ? ' \u00b7 ' + low + ' below par' : ''}
               </div>
             </div>
             <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
