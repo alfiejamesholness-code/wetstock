@@ -981,7 +981,7 @@ export default function App() {
         {effectiveView === 'recount' && (
           <RecountScreen
             sites={sites} recount={recount} pickVenue={(id) => setRecount(r => ({ ...r, venue: id }))}
-            rows={products.map(p => ({ id: p.id, name: p.name, current: stockAt(p, recount.venue) }))}
+            rows={products.filter(p => productAppliesTo(p, recount.venue)).map(p => ({ id: p.id, name: p.name, current: stockAt(p, recount.venue) }))}
             recountInput={recountInput} onSave={saveRecount} onBack={() => setView('siteStock')}
           />
         )}
@@ -1644,7 +1644,7 @@ function RecountScreen({ sites, recount, pickVenue, rows, recountInput, onSave, 
             data-pid={r.id}
             defaultValue=""
             placeholder={String(r.current)}
-            inputMode="numeric"
+            inputMode="decimal"
             onChange={(e) => { recountInput.current[r.id] = e.target.value; }}
             style={{ width: 82, textAlign: 'right', padding: '10px 10px', borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: T.ground, color: T.text, fontSize: 16 }}
           />
