@@ -819,8 +819,13 @@ export default function App() {
       const amount = amountRaw ? Math.max(0, Number(amountRaw) || 0) : 0;
       const caseAmountRaw = caseAmountRef.current ? caseAmountRef.current.value.trim() : '';
       const caseAmount = caseAmountRaw ? Math.max(0, Number(caseAmountRaw) || 0) : 0;
-      row.stock = amount ? { [STORE]: amount } : {};
-      row.unsplit_stock = (caseSize && caseAmount) ? { [STORE]: caseAmount } : {};
+      // Starting stock has to land on a site this product is actually
+      // carried at - it used to always go to Louis Container regardless of
+      // what was picked above, so it just silently vanished for anything
+      // scoped elsewhere.
+      const startSite = productSites.includes(sv) ? sv : productSites[0];
+      row.stock = amount ? { [startSite]: amount } : {};
+      row.unsplit_stock = (caseSize && caseAmount) ? { [startSite]: caseAmount } : {};
       const { data, error } = await supabase.from('products').insert(row).select().single();
       if (error) { setSheetError('Could not save: ' + error.message); return; }
       const created = productFromRow(data);
@@ -1219,7 +1224,9 @@ export default function App() {
                 </div>
               </div>
               <div style={{ fontSize: 12, color: T.textMuted, marginTop: -4, marginBottom: 16, lineHeight: 1.5 }}>
-                Both go into the container. Leave cases at 0 if it's not sold that way.
+                {productSites.length
+                  ? `Both go to ${venueName(productSites.includes(sv) ? sv : productSites[0])}${productSites.length > 1 ? ' — move the rest across with a transfer once it exists' : ''}. Leave cases at 0 if it's not sold that way.`
+                  : "Pick a site above first, then this can be filled in."}
               </div>
             </>
           )}
