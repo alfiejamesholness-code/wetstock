@@ -30,6 +30,15 @@ function productAppliesTo(p, siteId) {
   return !p.sites || !p.sites.length || p.sites.includes(siteId);
 }
 
+// Loose (split) stock plus whatever's still sealed in cases, converted to
+// units - e.g. 2 cases of 24 + 6 loose = 54 total. Below-par checks and the
+// stock display should compare against this, not the loose count alone.
+function totalStock(p, siteId) {
+  const loose = stockAt(p, siteId);
+  const cases = (p.unsplitStock && p.unsplitStock[siteId]) || 0;
+  return loose + (p.caseSize ? cases * p.caseSize : 0);
+}
+
 // Free, on-device invoice reading: Tesseract gives us raw text, then this
 // picks out "quantity + product name" from each line by trying a few common
 // invoice layouts. It's a heuristic, not a guarantee — the review/edit step
@@ -186,7 +195,7 @@ export default function App() {
   // business-wide rather than per-venue. Re-shows the banner whenever the
   // set of low products changes, but stays dismissed otherwise.
   const belowPar = products.filter(p => p.parLevel
-    && sites.reduce((sum, v) => sum + stockAt(p, v.id), 0) < p.parLevel);
+    && sites.reduce((sum, v) => sum + totalStock(p, v.id), 0) < p.parLevel);
   const belowParKey = belowPar.map(p => p.id).sort().join(',');
   const lowStockBanner = belowPar.length && belowParKey !== dismissedLowKey
     ? (belowPar.length <= 3
@@ -557,12 +566,19 @@ export default function App() {
     return CATEGORIES.filter(c => byCat[c]).map(cat => ({
       cat,
       items: byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name)).map(p => {
-        const qty = stockAt(p, sv);
+        const loose = stockAt(p, sv);
         const unsplitQty = (p.unsplitStock && p.unsplitStock[sv]) || 0;
-        const low = p.parLevel && qty < p.parLevel;
+        // The number shown is everything this product has at this site -
+        // sealed cases converted to units plus whatever's already loose -
+        // not just the loose count, so 2 full cases don't read as "6".
+        const total = loose + (p.caseSize ? unsplitQty * p.caseSize : 0);
+        const low = p.parLevel && total < p.parLevel;
+        const breakdown = unsplitQty
+          ? unsplitQty + ' case' + (unsplitQty === 1 ? '' : 's') + (p.caseSize ? ' (' + (unsplitQty * p.caseSize) + ')' : '') + (loose ? ' + ' + loose + ' loose' : '')
+          : '';
         return {
-          id: p.id, name: p.name, qty,
-          meta: p.unit + (p.parLevel ? ' \u00b7 par ' + p.parLevel : '') + (unsplitQty ? ' \u00b7 +' + unsplitQty + ' unsplit case' + (unsplitQty === 1 ? '' : 's') : ''),
+          id: p.id, name: p.name, qty: total,
+          meta: p.unit + (p.parLevel ? ' \u00b7 par ' + p.parLevel : '') + (breakdown ? ' \u00b7 ' + breakdown : ''),
           isFcg: p.owner === 'fcg',
           tone: low ? T.warn : T.text,
           edge: low ? 'rgba(216,162,79,.55)' : 'rgba(233,233,237,.09)',
@@ -580,7 +596,7 @@ export default function App() {
       ].filter(x => x.groups.length)
     : [{ label: '', note: '', showHeader: false, groups: groupsFor(products) }];
   let statLow = 0;
-  products.forEach(p => { if (p.parLevel && productAppliesTo(p, sv) && stockAt(p, sv) < p.parLevel) statLow++; });
+  products.forEach(p => { if (p.parLevel && productAppliesTo(p, sv) && totalStock(p, sv) < p.parLevel) statLow++; });
 
   const c = count;
   const ses = c && c.sessionId ? sessions.find(x => x.id === c.sessionId) : null;
@@ -937,7 +953,7 @@ export default function App() {
             sites={sites} sv={sv} stockVenue={stockVenue} setStockVenue={setStockVenue}
             statProducts={products.filter(p => productAppliesTo(p, sv)).length} statLow={statLow} statOpen={openSessions.length}
             ownerSections={ownerSections} noProducts={!products.some(p => productAppliesTo(p, sv))}
-            onOpenRecount={() => setView('recount')}
+            onOpenRecount={() => { setRecount(r => ({ ...r, venue: sv })); setView('recount'); }}
             onGoProducts={() => go('products')}
             stockVenueName={venueName(sv)}
             onBack={() => go('stock')}
@@ -1334,7 +1350,7 @@ function SitePickerScreen({ sites, products, openSessions, onSelectSite }) {
       {sites.map(v => {
         const here = products.filter(p => productAppliesTo(p, v.id));
         let low = 0;
-        here.forEach(p => { if (p.parLevel && stockAt(p, v.id) < p.parLevel) low++; });
+        here.forEach(p => { if (p.parLevel && totalStock(p, v.id) < p.parLevel) low++; });
         return (
           <div key={v.id} onClick={() => onSelectSite(v.id)} style={{
             background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 15, marginBottom: 8,
