@@ -132,6 +132,9 @@ export default function App() {
   const [activityLog, setActivityLog] = useState([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState('');
+  const [uniformItems, setUniformItems] = useState([]);
+  const [uniformOut, setUniformOut] = useState([]);
+  const [uniformCheckoutId, setUniformCheckoutId] = useState(null);
 
   // Step 3: products load from and save to Supabase. Everything else
   // (sites, sessions, deliveries, transfers, recounts, stock levels) is
@@ -156,6 +159,23 @@ export default function App() {
     load();
     return () => { cancelled = true; };
   }, [session]);
+
+  // Uniform items + who currently has what out. Refetched on sign-in and
+  // whenever the Uniform screen is opened, since there's no realtime here.
+  useEffect(() => {
+    if (!session || view !== 'uniform') return;
+    reloadUniform();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, view]);
+
+  async function reloadUniform() {
+    const [itemsRes, outRes] = await Promise.all([
+      supabase.from('uniform_items').select('*').order('sort'),
+      supabase.from('uniform_checkouts').select('*').is('in_at', null).order('out_at', { ascending: false }),
+    ]);
+    if (!itemsRes.error) setUniformItems(itemsRes.data || []);
+    if (!outRes.error) setUniformOut(outRes.data || []);
+  }
 
   // Pick up whatever session already exists (e.g. returning visit) and keep
   // listening for sign-in / sign-out from anywhere in the app.
@@ -243,6 +263,9 @@ export default function App() {
   const emailRef = useRef(null);
   const cancelReasonRef = useRef(null);
   const invoicePhotoRef = useRef(null);
+  const uniformPersonRef = useRef(null);
+  const uniformAddNameRef = useRef(null);
+  const uniformAddQtyRef = useRef(null);
   const recountInput = useRef({});
   const toastTimer = useRef(null);
   const scanTimer = useRef(null);
@@ -270,7 +293,7 @@ export default function App() {
     }
     filledFlag.current = false;
   }
-  function closeSheet() { setSheet(null); setSheetError(''); setPhotoTaken(false); }
+  function closeSheet() { setSheet(null); setSheetError(''); setPhotoTaken(false); setUniformCheckoutId(null); }
 
   // ---- scanner ----
   function startScan() {
@@ -553,7 +576,7 @@ export default function App() {
   const isManager = !!profile && profile.role === 'manager';
   const role = isManager && !previewStaff ? 'admin' : 'employee';
   const isAdmin = role === 'admin';
-  const effectiveView = isAdmin ? view : (['sessions', 'sessionDetail', 'count', 'stock', 'siteStock'].includes(view) ? view : 'sessions');
+  const effectiveView = isAdmin ? view : (['sessions', 'sessionDetail', 'count', 'stock', 'siteStock', 'uniform'].includes(view) ? view : 'sessions');
   const openSessions = sessions.filter(x => x.status !== 'complete');
   const active = openSessions[0];
   const sv = stockVenue;
@@ -713,7 +736,7 @@ export default function App() {
   const tabOn = (key) => effectiveView === key
     || (key === 'sessions' && effectiveView === 'sessionDetail')
     || (key === 'stock' && (effectiveView === 'recount' || effectiveView === 'siteStock'))
-    || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity'))
+    || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity' || effectiveView === 'uniform'))
     || (effectiveView === 'count' && ((key === 'transfers' && c && c.mode === 'transfer') || (key === 'deliveries' && c && c.mode === 'delivery') || (key === 'sessions' && c && (c.mode === 'out' || c.mode === 'back'))));
   const tabs = [
     ['stock', 'Stock', 'ph-stack'], ['sessions', 'Sessions', 'ph-clipboard-text'],
@@ -724,7 +747,14 @@ export default function App() {
   // session) plus their own sessions - not the management-only tabs.
   const staffTabs = [
     ['stock', 'Stock', 'ph-stack'], ['sessions', 'Sessions', 'ph-clipboard-text'],
+    ['uniform', 'Uniform', 'ph-t-shirt'],
   ].map(([key, label, icon]) => ({ label, icon, tone: tabOn(key) ? T.accent : T.textMuted, go: () => go(key) }));
+
+  const uniformRows = uniformItems.map(it => {
+    const out = uniformOut.filter(o => o.item_id === it.id);
+    return { ...it, outCount: out.length, available: Math.max(0, it.total - out.length) };
+  });
+  const uniformCheckoutItem = uniformCheckoutId ? uniformItems.find(i => i.id === uniformCheckoutId) : null;
 
   // ================= handlers referenced by JSX =================
   // A manager can preview the staff view (harmless, since they still have
@@ -747,6 +777,58 @@ export default function App() {
         actor_id: session.user.id, actor_label: actorLabel, action, detail: detail || null, metadata: metadata || null,
       });
     } catch { /* logging is non-critical */ }
+  }
+
+  const actorLabel = () => (profile && profile.full_name) || (session && session.user.email) || 'Unknown';
+
+  async function checkOutUniform(itemId, person) {
+    const name = (person || '').trim();
+    if (!name) { setSheetError('Whose is it?'); return; }
+    const { data, error } = await supabase.from('uniform_checkouts')
+      .insert({ item_id: itemId, person: name, out_by: actorLabel() })
+      .select().single();
+    if (error) { toast("Couldn't check out: " + error.message); return; }
+    setUniformOut(o => [data, ...o]);
+    setSheet(null); setSheetError('');
+    const item = uniformItems.find(i => i.id === itemId);
+    toast(name + ' has ' + (item ? item.name : 'a uniform item'));
+    logActivity('Uniform out', (item ? item.name : 'item') + ' — ' + name);
+  }
+  async function checkInUniform(checkoutId) {
+    const { error } = await supabase.from('uniform_checkouts')
+      .update({ in_at: new Date().toISOString(), in_by: actorLabel() })
+      .eq('id', checkoutId);
+    if (error) { toast("Couldn't check in: " + error.message); return; }
+    const co = uniformOut.find(x => x.id === checkoutId);
+    setUniformOut(o => o.filter(x => x.id !== checkoutId));
+    if (co) {
+      const item = uniformItems.find(i => i.id === co.item_id);
+      toast((item ? item.name : 'Item') + ' back from ' + co.person);
+      logActivity('Uniform in', (item ? item.name : 'item') + ' — ' + co.person);
+    }
+  }
+  async function addUniformItem(name, total) {
+    const n = (name || '').trim();
+    if (!n) { setSheetError('Name the item.'); return; }
+    const sort = (uniformItems.reduce((m, i) => Math.max(m, i.sort || 0), 0)) + 1;
+    const { data, error } = await supabase.from('uniform_items')
+      .insert({ name: n, total: Math.max(0, Math.round(Number(total) || 0)), sort })
+      .select().single();
+    if (error) { setSheetError('Could not add: ' + error.message); return; }
+    setUniformItems(items => [...items, data]);
+    setSheetError('');
+  }
+  async function setUniformItemTotal(itemId, total) {
+    const t = Math.max(0, Math.round(Number(total) || 0));
+    const { error } = await supabase.from('uniform_items').update({ total: t }).eq('id', itemId);
+    if (error) { toast("Couldn't save: " + error.message); return; }
+    setUniformItems(items => items.map(i => i.id === itemId ? { ...i, total: t } : i));
+  }
+  async function deleteUniformItem(itemId) {
+    const { error } = await supabase.from('uniform_items').delete().eq('id', itemId);
+    if (error) { toast("Couldn't remove: " + error.message); return; }
+    setUniformItems(items => items.filter(i => i.id !== itemId));
+    setUniformOut(o => o.filter(x => x.item_id !== itemId));
   }
 
   function itemsFromCounts(counts, caseCounts, prods) {
@@ -1040,6 +1122,7 @@ export default function App() {
             productCountLabel={plural(products.length, 'product')}
             onGoProducts={() => go('products')}
             onGoActivity={() => go('activity')}
+            onGoUniform={() => go('uniform')}
             sites={sites} STORE={STORE}
             onRemoveSite={(id) => setSites(s => s.filter(x => x.id !== id))}
             siteRef={siteRef} onAddSite={onAddSite}
@@ -1051,6 +1134,19 @@ export default function App() {
         {effectiveView === 'activity' && (
           <ActivityScreen
             items={activityLog} loading={activityLoading} error={activityError}
+            onBack={() => go('more')}
+          />
+        )}
+        {effectiveView === 'uniform' && (
+          <UniformScreen
+            isAdmin={isAdmin}
+            rows={uniformRows}
+            out={uniformOut}
+            itemName={(id) => (uniformItems.find(i => i.id === id) || {}).name || 'Item'}
+            fmt={fmt}
+            onCheckOut={(id) => { setUniformCheckoutId(id); openSheet('uniformOut'); }}
+            onCheckIn={checkInUniform}
+            onManage={() => openSheet('uniformManage')}
             onBack={() => go('more')}
           />
         )}
@@ -1269,6 +1365,59 @@ export default function App() {
               </div>
             </>
           )}
+        </Sheet>
+      )}
+
+      {sheet === 'uniformOut' && (
+        <Sheet title={'Check out ' + (uniformCheckoutItem ? uniformCheckoutItem.name : 'uniform')} onClose={closeSheet} onBackdrop={closeSheet}>
+          <FieldLabel>Who's taking it</FieldLabel>
+          <input ref={uniformPersonRef} placeholder="Name" autoFocus style={{ ...inputStyle, marginBottom: 12 }}
+            onKeyDown={(e) => { if (e.key === 'Enter') checkOutUniform(uniformCheckoutId, uniformPersonRef.current ? uniformPersonRef.current.value : ''); }} />
+          <ErrorText>{sheetError}</ErrorText>
+          <FilledButton onClick={() => checkOutUniform(uniformCheckoutId, uniformPersonRef.current ? uniformPersonRef.current.value : '')}>Check out</FilledButton>
+        </Sheet>
+      )}
+
+      {sheet === 'uniformManage' && (
+        <Sheet title="Uniform items" onClose={closeSheet} onBackdrop={closeSheet}>
+          <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, marginBottom: 14 }}>
+            Set how many of each the business owns. Available count is this minus whatever's checked out.
+          </div>
+          {uniformItems.map(it => {
+            const outNow = uniformOut.filter(o => o.item_id === it.id).length;
+            return (
+              <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{it.name}</div>
+                  {outNow > 0 && <div style={{ fontSize: 11, color: T.textMuted, marginTop: 1 }}>{outNow} out right now</div>}
+                </div>
+                <input
+                  type="number" inputMode="numeric" defaultValue={it.total}
+                  onBlur={(e) => { const v = e.target.value; if (String(v) !== String(it.total)) setUniformItemTotal(it.id, v); }}
+                  style={{ width: 64, textAlign: 'right', padding: '9px 10px', borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: T.ground, color: T.text, fontSize: 15 }}
+                />
+                <button
+                  onClick={() => { if (outNow === 0) deleteUniformItem(it.id); else toast('Check it all in first'); }}
+                  style={{ background: 'none', border: 'none', color: outNow === 0 ? T.danger : T.textMuted, cursor: 'pointer', fontSize: 18, padding: '0 2px' }}
+                ><i className="ph ph-trash" /></button>
+              </div>
+            );
+          })}
+          <div style={{ height: 1, background: 'rgba(233,233,237,.12)', margin: '14px 0' }} />
+          <FieldLabel>Add an item</FieldLabel>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <input ref={uniformAddNameRef} placeholder="e.g. Shirt - XXL" style={{ ...inputStyle, flex: 1 }} />
+            <input ref={uniformAddQtyRef} type="number" inputMode="numeric" placeholder="0" style={{ ...inputStyle, width: 64, textAlign: 'right' }} />
+          </div>
+          <ErrorText>{sheetError}</ErrorText>
+          <OutlineButton icon="ph-plus" onClick={async () => {
+            await addUniformItem(
+              uniformAddNameRef.current ? uniformAddNameRef.current.value : '',
+              uniformAddQtyRef.current ? uniformAddQtyRef.current.value : '',
+            );
+            if (uniformAddNameRef.current) uniformAddNameRef.current.value = '';
+            if (uniformAddQtyRef.current) uniformAddQtyRef.current.value = '';
+          }}>Add item</OutlineButton>
         </Sheet>
       )}
 
@@ -1870,7 +2019,7 @@ function TransfersScreen({ transferMonth, transferSummaries, onSummaryClick, fil
   );
 }
 
-function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, sites, STORE, onRemoveSite, siteRef, onAddSite, summaryOn, onToggleSummary, recipients, onRemoveRecipient, emailRef, onAddRecipient }) {
+function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, onGoUniform, sites, STORE, onRemoveSite, siteRef, onAddSite, summaryOn, onToggleSummary, recipients, onRemoveRecipient, emailRef, onAddRecipient }) {
   return (
     <div>
       <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 16 }}>More</div>
@@ -1888,13 +2037,25 @@ function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, sites, STOR
       </div>
 
       <div onClick={onGoActivity} style={{
-        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 20,
+        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 8,
         display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
       }}>
         <i className="ph ph-list-checks" style={{ fontSize: 20, color: T.accent }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 15, fontWeight: 500 }}>Activity</div>
           <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>Who changed what, and when</div>
+        </div>
+        <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
+      </div>
+
+      <div onClick={onGoUniform} style={{
+        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 20,
+        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+      }}>
+        <i className="ph ph-t-shirt" style={{ fontSize: 20, color: T.accent }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 500 }}>Uniform</div>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>Shirts and aprons, in and out</div>
         </div>
         <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
       </div>
@@ -2020,6 +2181,72 @@ function ActivityScreen({ items, loading, error, onBack }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function UniformScreen({ isAdmin, rows, out, itemName, fmt, onCheckOut, onCheckIn, onManage, onBack }) {
+  return (
+    <div>
+      {isAdmin && (
+        <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
+          <i className="ph ph-arrow-left" /> More
+        </button>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+        <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', flex: 1 }}>Uniform</div>
+        {isAdmin && (
+          <button onClick={onManage} style={{ background: 'none', border: 'none', color: T.accent, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}>
+            <i className="ph ph-sliders" /> Items
+          </button>
+        )}
+      </div>
+      <div style={{ fontSize: 14, color: T.textSecondary, marginBottom: 16 }}>Check shirts and aprons in and out.</div>
+
+      {rows.length === 0 && (
+        <EmptyState
+          title="No uniform items yet"
+          body={isAdmin ? 'Add shirts and aprons with the Items button above.' : 'A manager needs to set these up first.'}
+        />
+      )}
+
+      {rows.map(r => (
+        <div key={r.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 500 }}>{r.name}</div>
+            <div style={{ fontSize: 12, color: r.available === 0 ? T.warn : T.textMuted, marginTop: 2 }}>
+              {r.available} of {r.total} available{r.outCount ? ' \u00b7 ' + r.outCount + ' out' : ''}
+            </div>
+          </div>
+          <button
+            onClick={() => onCheckOut(r.id)}
+            disabled={r.available <= 0}
+            style={{
+              padding: '9px 14px', borderRadius: 8, border: `1px solid ${T.accent}`, background: 'transparent',
+              color: T.accent, fontSize: 13, fontWeight: 500, cursor: r.available <= 0 ? 'default' : 'pointer',
+              opacity: r.available <= 0 ? 0.4 : 1, flex: 'none',
+            }}
+          >Check out</button>
+        </div>
+      ))}
+
+      {out.length > 0 && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 500, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.06em', margin: '22px 0 8px' }}>Out now</div>
+          {out.map(o => (
+            <div key={o.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 500 }}>{o.person}</div>
+                <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>{itemName(o.item_id)} \u00b7 out {fmt(o.out_at)}</div>
+              </div>
+              <button
+                onClick={() => onCheckIn(o.id)}
+                style={{ padding: '9px 14px', borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, fontSize: 13, fontWeight: 500, cursor: 'pointer', flex: 'none' }}
+              >Check in</button>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }

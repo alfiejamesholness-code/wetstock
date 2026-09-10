@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Tesseract.js language cache (downloaded at runtime / by CDN in browser)
+*.traineddata
