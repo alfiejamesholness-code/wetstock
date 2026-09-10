@@ -133,8 +133,7 @@ export default function App() {
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState('');
   const [uniformItems, setUniformItems] = useState([]);
-  const [uniformOut, setUniformOut] = useState([]);
-  const [uniformCheckoutId, setUniformCheckoutId] = useState(null);
+  const [uniformMove, setUniformMove] = useState(null); // { itemId, dir: 'out' | 'in' }
 
   // Step 3: products load from and save to Supabase. Everything else
   // (sites, sessions, deliveries, transfers, recounts, stock levels) is
@@ -160,7 +159,7 @@ export default function App() {
     return () => { cancelled = true; };
   }, [session]);
 
-  // Uniform items + who currently has what out. Refetched on sign-in and
+  // Uniform items and how many of each are currently out. Refetched
   // whenever the Uniform screen is opened, since there's no realtime here.
   useEffect(() => {
     if (!session || view !== 'uniform') return;
@@ -169,12 +168,8 @@ export default function App() {
   }, [session, view]);
 
   async function reloadUniform() {
-    const [itemsRes, outRes] = await Promise.all([
-      supabase.from('uniform_items').select('*').order('sort'),
-      supabase.from('uniform_checkouts').select('*').is('in_at', null).order('out_at', { ascending: false }),
-    ]);
-    if (!itemsRes.error) setUniformItems(itemsRes.data || []);
-    if (!outRes.error) setUniformOut(outRes.data || []);
+    const { data, error } = await supabase.from('uniform_items').select('*').order('sort');
+    if (!error) setUniformItems(data || []);
   }
 
   // Pick up whatever session already exists (e.g. returning visit) and keep
@@ -263,7 +258,7 @@ export default function App() {
   const emailRef = useRef(null);
   const cancelReasonRef = useRef(null);
   const invoicePhotoRef = useRef(null);
-  const uniformPersonRef = useRef(null);
+  const uniformQtyRef = useRef(null);
   const uniformAddNameRef = useRef(null);
   const uniformAddQtyRef = useRef(null);
   const recountInput = useRef({});
@@ -293,7 +288,7 @@ export default function App() {
     }
     filledFlag.current = false;
   }
-  function closeSheet() { setSheet(null); setSheetError(''); setPhotoTaken(false); setUniformCheckoutId(null); }
+  function closeSheet() { setSheet(null); setSheetError(''); setPhotoTaken(false); setUniformMove(null); }
 
   // ---- scanner ----
   function startScan() {
@@ -576,7 +571,7 @@ export default function App() {
   const isManager = !!profile && profile.role === 'manager';
   const role = isManager && !previewStaff ? 'admin' : 'employee';
   const isAdmin = role === 'admin';
-  const effectiveView = isAdmin ? view : (['sessions', 'sessionDetail', 'count', 'stock', 'siteStock', 'uniform'].includes(view) ? view : 'sessions');
+  const effectiveView = isAdmin ? view : (['sessions', 'sessionDetail', 'count', 'stock', 'siteStock'].includes(view) ? view : 'sessions');
   const openSessions = sessions.filter(x => x.status !== 'complete');
   const active = openSessions[0];
   const sv = stockVenue;
@@ -747,14 +742,10 @@ export default function App() {
   // session) plus their own sessions - not the management-only tabs.
   const staffTabs = [
     ['stock', 'Stock', 'ph-stack'], ['sessions', 'Sessions', 'ph-clipboard-text'],
-    ['uniform', 'Uniform', 'ph-t-shirt'],
   ].map(([key, label, icon]) => ({ label, icon, tone: tabOn(key) ? T.accent : T.textMuted, go: () => go(key) }));
 
-  const uniformRows = uniformItems.map(it => {
-    const out = uniformOut.filter(o => o.item_id === it.id);
-    return { ...it, outCount: out.length, available: Math.max(0, it.total - out.length) };
-  });
-  const uniformCheckoutItem = uniformCheckoutId ? uniformItems.find(i => i.id === uniformCheckoutId) : null;
+  const uniformRows = uniformItems.map(it => ({ ...it, available: Math.max(0, it.total - it.out) }));
+  const uniformMoveItem = uniformMove ? uniformItems.find(i => i.id === uniformMove.itemId) : null;
 
   // ================= handlers referenced by JSX =================
   // A manager can preview the staff view (harmless, since they still have
@@ -779,33 +770,21 @@ export default function App() {
     } catch { /* logging is non-critical */ }
   }
 
-  const actorLabel = () => (profile && profile.full_name) || (session && session.user.email) || 'Unknown';
-
-  async function checkOutUniform(itemId, person) {
-    const name = (person || '').trim();
-    if (!name) { setSheetError('Whose is it?'); return; }
-    const { data, error } = await supabase.from('uniform_checkouts')
-      .insert({ item_id: itemId, person: name, out_by: actorLabel() })
-      .select().single();
-    if (error) { toast("Couldn't check out: " + error.message); return; }
-    setUniformOut(o => [data, ...o]);
-    setSheet(null); setSheetError('');
+  // dir 'out' takes qty away (into circulation), 'in' brings qty back.
+  async function moveUniform(itemId, dir, qty) {
     const item = uniformItems.find(i => i.id === itemId);
-    toast(name + ' has ' + (item ? item.name : 'a uniform item'));
-    logActivity('Uniform out', (item ? item.name : 'item') + ' — ' + name);
-  }
-  async function checkInUniform(checkoutId) {
-    const { error } = await supabase.from('uniform_checkouts')
-      .update({ in_at: new Date().toISOString(), in_by: actorLabel() })
-      .eq('id', checkoutId);
-    if (error) { toast("Couldn't check in: " + error.message); return; }
-    const co = uniformOut.find(x => x.id === checkoutId);
-    setUniformOut(o => o.filter(x => x.id !== checkoutId));
-    if (co) {
-      const item = uniformItems.find(i => i.id === co.item_id);
-      toast((item ? item.name : 'Item') + ' back from ' + co.person);
-      logActivity('Uniform in', (item ? item.name : 'item') + ' — ' + co.person);
-    }
+    if (!item) return;
+    const n = Math.max(1, Math.round(Number(qty) || 0));
+    const room = dir === 'out' ? Math.max(0, item.total - item.out) : item.out;
+    if (n > room) { setSheetError(dir === 'out' ? `Only ${room} left to take.` : `Only ${item.out} are out.`); return; }
+    const delta = dir === 'out' ? n : -n;
+    const { error } = await supabase.rpc('adjust_uniform', { p_item_id: itemId, p_delta: delta });
+    if (error) { toast("Couldn't save: " + error.message); return; }
+    setUniformItems(items => items.map(i => i.id === itemId
+      ? { ...i, out: Math.max(0, Math.min(i.total, i.out + delta)) } : i));
+    setSheet(null); setSheetError('');
+    toast(dir === 'out' ? `Took ${n} × ${item.name}` : `Returned ${n} × ${item.name}`);
+    logActivity(dir === 'out' ? 'Uniform out' : 'Uniform in', `${n} × ${item.name}`);
   }
   async function addUniformItem(name, total) {
     const n = (name || '').trim();
@@ -828,7 +807,6 @@ export default function App() {
     const { error } = await supabase.from('uniform_items').delete().eq('id', itemId);
     if (error) { toast("Couldn't remove: " + error.message); return; }
     setUniformItems(items => items.filter(i => i.id !== itemId));
-    setUniformOut(o => o.filter(x => x.item_id !== itemId));
   }
 
   function itemsFromCounts(counts, caseCounts, prods) {
@@ -1139,13 +1117,8 @@ export default function App() {
         )}
         {effectiveView === 'uniform' && (
           <UniformScreen
-            isAdmin={isAdmin}
             rows={uniformRows}
-            out={uniformOut}
-            itemName={(id) => (uniformItems.find(i => i.id === id) || {}).name || 'Item'}
-            fmt={fmt}
-            onCheckOut={(id) => { setUniformCheckoutId(id); openSheet('uniformOut'); }}
-            onCheckIn={checkInUniform}
+            onMove={(itemId, dir) => { setUniformMove({ itemId, dir }); openSheet('uniformMove'); }}
             onManage={() => openSheet('uniformManage')}
             onBack={() => go('more')}
           />
@@ -1368,23 +1341,33 @@ export default function App() {
         </Sheet>
       )}
 
-      {sheet === 'uniformOut' && (
-        <Sheet title={'Check out ' + (uniformCheckoutItem ? uniformCheckoutItem.name : 'uniform')} onClose={closeSheet} onBackdrop={closeSheet}>
-          <FieldLabel>Who's taking it</FieldLabel>
-          <input ref={uniformPersonRef} placeholder="Name" autoFocus style={{ ...inputStyle, marginBottom: 12 }}
-            onKeyDown={(e) => { if (e.key === 'Enter') checkOutUniform(uniformCheckoutId, uniformPersonRef.current ? uniformPersonRef.current.value : ''); }} />
-          <ErrorText>{sheetError}</ErrorText>
-          <FilledButton onClick={() => checkOutUniform(uniformCheckoutId, uniformPersonRef.current ? uniformPersonRef.current.value : '')}>Check out</FilledButton>
-        </Sheet>
-      )}
+      {sheet === 'uniformMove' && uniformMove && uniformMoveItem && (() => {
+        const dir = uniformMove.dir;
+        const max = dir === 'out' ? Math.max(0, uniformMoveItem.total - uniformMoveItem.out) : uniformMoveItem.out;
+        return (
+          <Sheet title={(dir === 'out' ? 'Take ' : 'Return ') + uniformMoveItem.name} onClose={closeSheet} onBackdrop={closeSheet}>
+            <FieldLabel>{dir === 'out' ? 'How many are you taking' : 'How many are coming back'}</FieldLabel>
+            <input ref={uniformQtyRef} type="number" inputMode="numeric" defaultValue={dir === 'out' ? 1 : max} min={1} max={max}
+              autoFocus style={{ ...inputStyle, marginBottom: 6 }}
+              onKeyDown={(e) => { if (e.key === 'Enter') moveUniform(uniformMove.itemId, dir, uniformQtyRef.current ? uniformQtyRef.current.value : 1); }} />
+            <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 12 }}>
+              {dir === 'out' ? `${max} available to take` : `${max} currently out`}
+            </div>
+            <ErrorText>{sheetError}</ErrorText>
+            <FilledButton onClick={() => moveUniform(uniformMove.itemId, dir, uniformQtyRef.current ? uniformQtyRef.current.value : 1)}>
+              {dir === 'out' ? 'Take' : 'Return'}
+            </FilledButton>
+          </Sheet>
+        );
+      })()}
 
       {sheet === 'uniformManage' && (
         <Sheet title="Uniform items" onClose={closeSheet} onBackdrop={closeSheet}>
           <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, marginBottom: 14 }}>
-            Set how many of each the business owns. Available count is this minus whatever's checked out.
+            Set how many of each the business owns. Available count is this minus whatever's out.
           </div>
           {uniformItems.map(it => {
-            const outNow = uniformOut.filter(o => o.item_id === it.id).length;
+            const outNow = it.out;
             return (
               <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -2185,68 +2168,49 @@ function ActivityScreen({ items, loading, error, onBack }) {
   );
 }
 
-function UniformScreen({ isAdmin, rows, out, itemName, fmt, onCheckOut, onCheckIn, onManage, onBack }) {
+function UniformScreen({ rows, onMove, onManage, onBack }) {
   return (
     <div>
-      {isAdmin && (
-        <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
-          <i className="ph ph-arrow-left" /> More
-        </button>
-      )}
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
+        <i className="ph ph-arrow-left" /> More
+      </button>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', flex: 1 }}>Uniform</div>
-        {isAdmin && (
-          <button onClick={onManage} style={{ background: 'none', border: 'none', color: T.accent, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}>
-            <i className="ph ph-sliders" /> Items
-          </button>
-        )}
+        <button onClick={onManage} style={{ background: 'none', border: 'none', color: T.accent, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}>
+          <i className="ph ph-sliders" /> Items
+        </button>
       </div>
-      <div style={{ fontSize: 14, color: T.textSecondary, marginBottom: 16 }}>Check shirts and aprons in and out.</div>
+      <div style={{ fontSize: 14, color: T.textSecondary, marginBottom: 16 }}>Take shirts and aprons out for staff and bring them back.</div>
 
       {rows.length === 0 && (
-        <EmptyState
-          title="No uniform items yet"
-          body={isAdmin ? 'Add shirts and aprons with the Items button above.' : 'A manager needs to set these up first.'}
-        />
+        <EmptyState title="No uniform items yet" body="Add shirts and aprons with the Items button above." />
       )}
 
       {rows.map(r => (
-        <div key={r.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div key={r.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 15, fontWeight: 500 }}>{r.name}</div>
             <div style={{ fontSize: 12, color: r.available === 0 ? T.warn : T.textMuted, marginTop: 2 }}>
-              {r.available} of {r.total} available{r.outCount ? ' \u00b7 ' + r.outCount + ' out' : ''}
+              {r.available} of {r.total} available{r.out ? ' \u00b7 ' + r.out + ' out' : ''}
             </div>
           </div>
+          {r.out > 0 && (
+            <button
+              onClick={() => onMove(r.id, 'in')}
+              style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, fontSize: 13, fontWeight: 500, cursor: 'pointer', flex: 'none' }}
+            >Return</button>
+          )}
           <button
-            onClick={() => onCheckOut(r.id)}
+            onClick={() => onMove(r.id, 'out')}
             disabled={r.available <= 0}
             style={{
-              padding: '9px 14px', borderRadius: 8, border: `1px solid ${T.accent}`, background: 'transparent',
+              padding: '9px 12px', borderRadius: 8, border: `1px solid ${T.accent}`, background: 'transparent',
               color: T.accent, fontSize: 13, fontWeight: 500, cursor: r.available <= 0 ? 'default' : 'pointer',
               opacity: r.available <= 0 ? 0.4 : 1, flex: 'none',
             }}
-          >Check out</button>
+          >Take</button>
         </div>
       ))}
-
-      {out.length > 0 && (
-        <>
-          <div style={{ fontSize: 11, fontWeight: 500, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.06em', margin: '22px 0 8px' }}>Out now</div>
-          {out.map(o => (
-            <div key={o.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14.5, fontWeight: 500 }}>{o.person}</div>
-                <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>{itemName(o.item_id)} \u00b7 out {fmt(o.out_at)}</div>
-              </div>
-              <button
-                onClick={() => onCheckIn(o.id)}
-                style={{ padding: '9px 14px', borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, fontSize: 13, fontWeight: 500, cursor: 'pointer', flex: 'none' }}
-              >Check in</button>
-            </div>
-          ))}
-        </>
-      )}
     </div>
   );
 }
