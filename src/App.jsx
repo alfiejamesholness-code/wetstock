@@ -30,6 +30,21 @@ function productAppliesTo(p, siteId) {
   return !p.sites || !p.sites.length || p.sites.includes(siteId);
 }
 
+function sessionFromRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    venue: row.venue,
+    date: row.date,
+    status: row.status,
+    out: row.out || {},
+    outCases: row.out_cases || {},
+    back: row.back || {},
+    backCases: row.back_cases || {},
+    completedAt: row.completed_at,
+  };
+}
+
 // Loose (split) stock plus whatever's still sealed in cases, converted to
 // units - e.g. 2 cases of 24 + 6 loose = 54 total. Below-par checks and the
 // stock display should compare against this, not the loose count alone.
@@ -135,10 +150,10 @@ export default function App() {
   const [uniformItems, setUniformItems] = useState([]);
   const [uniformMove, setUniformMove] = useState(null); // { itemId, dir: 'out' | 'in' }
 
-  // Step 3: products load from and save to Supabase. Everything else
-  // (sites, sessions, deliveries, transfers, recounts, stock levels) is
-  // still local-only, wired up in later steps. Only fetch once logged in,
-  // since reading products now requires authentication (RLS policy).
+  // Products and sessions load from and save to Supabase. Everything else
+  // (sites, deliveries, transfers, recounts, stock levels) is still
+  // local-only. Only fetch once logged in, since reading now requires
+  // authentication (RLS policy).
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
@@ -157,6 +172,20 @@ export default function App() {
     }
     load();
     return () => { cancelled = true; };
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    async function load() {
+      const { data, error } = await supabase.from('sessions').select('*').order('created_at', { ascending: false });
+      if (cancelled) return;
+      if (error) { toast("Couldn't load saved sessions: " + error.message); return; }
+      setSessions((data || []).map(sessionFromRow));
+    }
+    load();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
   // Uniform items and how many of each are currently out. Refetched
@@ -448,6 +477,8 @@ export default function App() {
       const items = itemsFromCounts(deltaCounts, deltaCases, products);
       logActivity(wasAlreadyOut ? 'Added to load' : 'Loaded out', ses.name + ' \u2014 ' + summarizeItems(items),
         { sessionId: ses.id, session: ses.name, venue: venueName(ses.venue), mode: 'out', items });
+      supabase.from('sessions').update({ out: ses.out, out_cases: ses.outCases, status: 'out' }).eq('id', ses.id)
+        .then(({ error }) => { if (error) toast("Couldn't save session: " + error.message); });
     } else {
       ses.back = { ...c.counts };
       ses.backCases = { ...(c.caseCounts || {}) };
@@ -461,6 +492,10 @@ export default function App() {
       const items = itemsFromCounts(c.counts, c.caseCounts, products);
       logActivity('Returned', ses.name + ' \u2014 ' + summarizeItems(items),
         { sessionId: ses.id, session: ses.name, venue: venueName(ses.venue), mode: 'back', items });
+      supabase.from('sessions')
+        .update({ back: ses.back, back_cases: ses.backCases, status: 'complete', completed_at: ses.completedAt })
+        .eq('id', ses.id)
+        .then(({ error }) => { if (error) toast("Couldn't save session: " + error.message); });
     }
   }
 
@@ -845,6 +880,8 @@ export default function App() {
     setSheet(null); setView('sessions');
     toast('Session cancelled');
     logActivity('Cancelled session', (ses ? ses.name + ' — ' : '') + reason, { sessionId: id, reason });
+    supabase.from('sessions').delete().eq('id', id)
+      .then(({ error }) => { if (error) toast("Couldn't remove the saved session: " + error.message); });
   }
 
   function toggleProductSite(id) {
@@ -906,6 +943,10 @@ export default function App() {
     const ses = { id, name, venue, date: new Date().toISOString().slice(0, 10), status: 'loading', out: {}, back: {} };
     setSessions(s => [ses, ...s]); setSheet(null); setActiveSessionId(id);
     setCount({ mode: 'out', sessionId: id, counts: {}, review: [], added: [] }); setView('count');
+    supabase.from('sessions').insert({
+      id, name, venue: ses.venue, date: ses.date, status: 'loading',
+      created_by: session ? session.user.id : null,
+    }).then(({ error }) => { if (error) toast("Couldn't save session: " + error.message); });
   }
   function onAutoReadLabelClick(e) {
     // The label's native click opens the camera directly, which iOS Safari
