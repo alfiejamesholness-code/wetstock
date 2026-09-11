@@ -1074,7 +1074,7 @@ export default function App() {
         )}
         {effectiveView === 'sessionDetail' && detailSession && (
           <SessionDetailScreen
-            session={detailSession} venueName={venueName} fmt={fmt}
+            session={detailSession} products={products} venueName={venueName} fmt={fmt}
             onBack={() => setView('sessions')}
             onPrimary={() => openCount(detailSession.status === 'loading' ? 'out' : 'back', detailSession.id)}
             onAddMore={() => openCount('out', detailSession.id)}
@@ -1660,8 +1660,18 @@ function SessionsScreen({ isAdmin, openSessions, venueName, fmt, onOpen, onNewSe
   );
 }
 
-function SessionDetailScreen({ session, venueName, fmt, onBack, onPrimary, onAddMore, onCancel }) {
+function SessionDetailScreen({ session, products, venueName, fmt, onBack, onPrimary, onAddMore, onCancel }) {
   const isOut = session.status === 'out';
+  const [showOut, setShowOut] = useState(false);
+  const outRows = Array.from(new Set([...Object.keys(session.out || {}), ...Object.keys(session.outCases || {})]))
+    .map(pid => {
+      const p = products.find(x => x.id === pid);
+      const qty = (session.out || {})[pid] || 0;
+      const caseQty = (session.outCases || {})[pid] || 0;
+      return { id: pid, name: p ? p.name : 'Removed product', qty, caseQty };
+    })
+    .filter(r => r.qty > 0 || r.caseQty > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
@@ -1691,6 +1701,32 @@ function SessionDetailScreen({ session, venueName, fmt, onBack, onPrimary, onAdd
           For events running over several days \u2014 add to what's out any time before it comes back.
         </div>
       )}
+
+      {outRows.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div
+            onClick={() => setShowOut(v => !v)}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 2px' }}
+          >
+            <i className={`ph ${showOut ? 'ph-caret-down' : 'ph-caret-right'}`} style={{ fontSize: 12, color: T.textMuted }} />
+            <span style={{ fontSize: 13, fontWeight: 500 }}>What's out</span>
+            <span style={{ fontSize: 12, color: T.textMuted }}>({outRows.length})</span>
+          </div>
+          {showOut && (
+            <div style={{ marginTop: 8 }}>
+              {outRows.map(r => (
+                <div key={r.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: '10px 13px', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ flex: 1, fontSize: 13.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+                  <span style={{ fontSize: 13, color: T.textMuted, flex: 'none' }}>
+                    {r.caseQty ? plural(r.caseQty, 'case') + (r.qty ? ' + ' : '') : ''}{r.qty ? plural(r.qty, 'unit') : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <button onClick={onCancel} style={{ background: 'none', border: 'none', color: T.textMuted, fontSize: 13, cursor: 'pointer', marginTop: 16, padding: 0 }}>
         Cancel session
       </button>
