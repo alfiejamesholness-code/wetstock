@@ -1659,6 +1659,9 @@ function SessionDetailScreen({ session, venueName, fmt, onBack, onPrimary, onAdd
 
 function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewItems, autoAdded, onOpenScan, onInc, onDec, onIncCase, onDecCase, onTapRow }) {
   const [expandedId, setExpandedId] = useState(null);
+  const [search, setSearch] = useState('');
+  const q = search.trim().toLowerCase();
+  const filteredTiles = q ? tiles.filter(p => p.name.toLowerCase().includes(q)) : tiles;
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 10, padding: 0 }}>
@@ -1666,6 +1669,19 @@ function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewI
       </button>
       <div style={{ fontSize: 21, fontWeight: 500, letterSpacing: '-.01em', marginBottom: 3 }}>{title}</div>
       <div style={{ fontSize: 13, color: T.textSecondary, marginBottom: 14 }}>{sub}</div>
+
+      <div style={{ position: 'relative', marginBottom: 10 }}>
+        <i className="ph ph-magnifying-glass" style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', color: T.textMuted, fontSize: 15 }} />
+        <input
+          value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products"
+          style={{ ...inputStyle, paddingLeft: 36 }}
+        />
+        {search && (
+          <button onClick={() => setSearch('')} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: T.textMuted, cursor: 'pointer', fontSize: 16, padding: 4 }}>
+            <i className="ph ph-x" />
+          </button>
+        )}
+      </div>
 
       <div style={{ marginBottom: 12 }}>
         <OutlineButton icon="ph-barcode" onClick={onOpenScan}>Scan barcode</OutlineButton>
@@ -1700,7 +1716,11 @@ function CountScreen({ title, sub, tiles, finishLabel, onFinish, onBack, reviewI
         </div>
       )}
 
-      {tiles.map(p => {
+      {q && filteredTiles.length === 0 && (
+        <EmptyState title="No matches" body={`Nothing in this list matches "${search.trim()}".`} />
+      )}
+
+      {filteredTiles.map(p => {
         const on = p.qty > 0 || p.caseQty > 0;
 
         if (p.hasCase) {
