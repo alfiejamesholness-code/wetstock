@@ -785,6 +785,17 @@ export default function App() {
     setStockTakeLines(lines => ({ ...lines, [productId]: stockTakeLineFromRow(data) }));
   }
 
+  // A product that arrives without a case size gets asked "units per
+  // case?" once, inline, the moment someone actually enters a case count
+  // for it during a stock take - saved onto the product itself so every
+  // other screen (Stock, par levels, Ordering) benefits from it too, not
+  // just this one count.
+  async function onSetCaseSize(productId, unitsPerCase) {
+    setProducts(ps => ps.map(p => p.id === productId ? { ...p, caseSize: unitsPerCase } : p));
+    const { error } = await supabase.from('products').update({ case_size: unitsPerCase }).eq('id', productId);
+    if (error) toast("Couldn't save units per case: " + error.message);
+  }
+
   async function onAbandonStockTake() {
     if (!stockTake) return;
     const { error } = await supabase.from('stock_takes').update({ status: 'abandoned' }).eq('id', stockTake.id);
@@ -1447,7 +1458,7 @@ export default function App() {
             category={stockTakeCategory} setCategory={setStockTakeCategory}
             search={stockTakeSearch} setSearch={setStockTakeSearch}
             uncountedOnly={stockTakeUncountedOnly} setUncountedOnly={setStockTakeUncountedOnly}
-            rows={stockTakeRows} onSaveLine={saveStockTakeLine}
+            rows={stockTakeRows} onSaveLine={saveStockTakeLine} onSetCaseSize={onSetCaseSize}
             loading={stockTakeLoading}
             countedTotal={stockTakeCountedTotal} uncountedTotal={stockTakeUncountedTotal}
             confirming={stockTakeConfirming} onCancelConfirm={() => setStockTakeConfirming(false)}
@@ -2976,9 +2987,14 @@ function EventDetailScreen({ event, venueName, fmt, lines, totalCost, defaultOrd
   );
 }
 
-function StockTakeRow({ product, line, onSaveLine }) {
+function StockTakeRow({ product, line, onSaveLine, onSetCaseSize }) {
   const [caseQty, setCaseQty] = useState(line ? String(line.caseQty || '') : '');
   const [unitQty, setUnitQty] = useState(line ? String(line.unitQty || '') : '');
+  // Only relevant while this product has no case size yet - a one-off
+  // "what's a case of this?" prompt, saved onto the product itself so it
+  // never has to be asked again.
+  const [unitsPerCase, setUnitsPerCase] = useState(product.caseSize ? String(product.caseSize) : '');
+  const [caseSizeError, setCaseSizeError] = useState('');
   // Re-sync if this row's saved line changes from outside (e.g. after a
   // failed save reverted it) - keyed on the line's own id/values, not on
   // every render, so it doesn't fight with what's being typed.
@@ -2988,9 +3004,18 @@ function StockTakeRow({ product, line, onSaveLine }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [line ? line.id : null, line ? line.caseQty : null, line ? line.unitQty : null]);
   const counted = !!(line && line.counted);
+  const needsCaseSize = !product.caseSize;
   function commit() {
-    const cq = product.caseSize ? (Number(caseQty) || 0) : 0;
+    const cq = Number(caseQty) || 0;
     const uq = Number(unitQty) || 0;
+    if (cq > 0 && needsCaseSize) {
+      const upc = Math.max(1, Math.round(Number(unitsPerCase) || 0));
+      if (!upc) { setCaseSizeError('Enter units per case to log cases for this product.'); return; }
+      setCaseSizeError('');
+      onSetCaseSize(product.id, upc);
+    } else {
+      setCaseSizeError('');
+    }
     onSaveLine(product.id, cq, uq);
   }
   return (
@@ -3003,35 +3028,33 @@ function StockTakeRow({ product, line, onSaveLine }) {
         <div style={{ flex: 1, fontSize: 14.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{product.name}</div>
         <div style={{ fontSize: 11.5, color: T.textMuted, flex: 'none' }}>{product.unit}</div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: product.caseSize ? '1fr 1fr' : '1fr', gap: 8 }}>
-        {product.caseSize ? (
-          <>
-            <input
-              type="number" inputMode="decimal" placeholder="Cases" value={caseQty}
-              onChange={(e) => setCaseQty(e.target.value)} onBlur={commit}
-              style={{ ...inputStyle, padding: '11px 12px', fontSize: 15 }}
-            />
-            <input
-              type="number" inputMode="decimal" placeholder={'Single ' + product.unit.toLowerCase() + 's'} value={unitQty}
-              onChange={(e) => setUnitQty(e.target.value)} onBlur={commit}
-              style={{ ...inputStyle, padding: '11px 12px', fontSize: 15 }}
-            />
-          </>
-        ) : (
-          <input
-            type="number" inputMode="decimal" placeholder="Quantity" value={unitQty}
-            onChange={(e) => setUnitQty(e.target.value)} onBlur={commit}
-            style={{ ...inputStyle, padding: '11px 12px', fontSize: 15 }}
-          />
-        )}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <input
+          type="number" inputMode="decimal" placeholder="Cases" value={caseQty}
+          onChange={(e) => setCaseQty(e.target.value)} onBlur={commit}
+          style={{ ...inputStyle, padding: '11px 12px', fontSize: 15 }}
+        />
+        <input
+          type="number" inputMode="decimal" placeholder={'Single ' + product.unit.toLowerCase() + 's'} value={unitQty}
+          onChange={(e) => setUnitQty(e.target.value)} onBlur={commit}
+          style={{ ...inputStyle, padding: '11px 12px', fontSize: 15 }}
+        />
       </div>
+      {needsCaseSize && (
+        <input
+          type="number" inputMode="numeric" placeholder="Units per case (only needed once for this product)" value={unitsPerCase}
+          onChange={(e) => setUnitsPerCase(e.target.value)} onBlur={commit}
+          style={{ ...inputStyle, padding: '11px 12px', fontSize: 13, marginTop: 8 }}
+        />
+      )}
+      {caseSizeError && <div style={{ fontSize: 11.5, color: T.warn, marginTop: 6, lineHeight: 1.4 }}>{caseSizeError}</div>}
     </div>
   );
 }
 
 function StockTakeScreen({
   stockTake, venueName, categoryProgress, category, setCategory, search, setSearch,
-  uncountedOnly, setUncountedOnly, rows, onSaveLine, loading, countedTotal, uncountedTotal,
+  uncountedOnly, setUncountedOnly, rows, onSaveLine, onSetCaseSize, loading, countedTotal, uncountedTotal,
   confirming, onCancelConfirm, onConfirm, onConfirmAnyway, onAbandon, onBack,
 }) {
   return (
@@ -3075,7 +3098,7 @@ function StockTakeScreen({
 
       {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '20px 0', textAlign: 'center' }}>{'Loading…'}</div>}
       {!loading && rows.length === 0 && <EmptyState title="Nothing here" body="Nothing matches in this category yet." />}
-      {rows.map(r => <StockTakeRow key={r.product.id} product={r.product} line={r.line} onSaveLine={onSaveLine} />)}
+      {rows.map(r => <StockTakeRow key={r.product.id} product={r.product} line={r.line} onSaveLine={onSaveLine} onSetCaseSize={onSetCaseSize} />)}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
         <FilledButton onClick={onConfirm}>Confirm stock take</FilledButton>
