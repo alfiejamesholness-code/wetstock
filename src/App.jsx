@@ -82,6 +82,27 @@ function drinkLineFromRow(row) {
   };
 }
 
+function stockTakeFromRow(row) {
+  return {
+    id: row.id,
+    location: row.location,
+    status: row.status,
+    startedAt: row.started_at,
+    confirmedAt: row.confirmed_at,
+  };
+}
+
+function stockTakeLineFromRow(row) {
+  return {
+    id: row.id,
+    stockTakeId: row.stock_take_id,
+    productId: row.product_id,
+    caseQty: Number(row.case_qty) || 0,
+    unitQty: Number(row.unit_qty) || 0,
+    counted: !!row.counted,
+  };
+}
+
 // Loose (split) stock plus whatever's still sealed in cases, converted to
 // units - e.g. 2 cases of 24 + 6 loose = 54 total. Below-par checks and the
 // stock display should compare against this, not the loose count alone.
@@ -191,6 +212,13 @@ export default function App() {
   const [defaultOrderBuffer, setDefaultOrderBuffer] = useState(0.10);
   const [activeEventId, setActiveEventId] = useState(null);
   const [newLineProductId, setNewLineProductId] = useState('');
+  const [stockTake, setStockTake] = useState(null); // { id, location, status }
+  const [stockTakeLines, setStockTakeLines] = useState({}); // productId -> stock_take_line
+  const [stockTakeLoading, setStockTakeLoading] = useState(false);
+  const [stockTakeCategory, setStockTakeCategory] = useState(CATEGORIES[0]);
+  const [stockTakeSearch, setStockTakeSearch] = useState('');
+  const [stockTakeUncountedOnly, setStockTakeUncountedOnly] = useState(false);
+  const [stockTakeConfirming, setStockTakeConfirming] = useState(false); // showing the "N uncounted" warning
 
   // Products and sessions load from and save to Supabase. Everything else
   // (sites, deliveries, transfers, recounts, stock levels) is still
@@ -498,7 +526,7 @@ export default function App() {
     });
     setSheet(null); setView('count');
   }
-  function finishCount() {
+  async function finishCount() {
     const c = count;
     if (!c) return;
     if (c.review && c.review.length) { toast('Resolve the review item first'); return; }
@@ -547,6 +575,10 @@ export default function App() {
 
     const nextSessions = sessions.map(x => ({ ...x }));
     const ses = nextSessions.find(x => x.id === c.sessionId);
+    if ((c.mode === 'out' || c.mode === 'back') && ses && await locationHasOpenStockTake(ses.venue)) {
+      toast('A stock take is in progress at ' + venueName(ses.venue) + ' — finish or abandon it first.');
+      return;
+    }
     if (c.mode === 'out') {
       // Re-opening an already-out session (e.g. a multi-day event, taking
       // more out on day 2 or 3) must only take the *new* amount from stock -
@@ -670,8 +702,12 @@ export default function App() {
     toast(action === 'new' ? 'Added as a new product' : 'Merged into the existing product');
   }
 
-  function saveRecount() {
+  async function saveRecount() {
     const venue = recount.venue;
+    if (await locationHasOpenStockTake(venue)) {
+      toast('A stock take is in progress at ' + venueName(venue) + ' — finish or abandon it first.');
+      return;
+    }
     const changes = [];
     const nextProducts = products.map(p => {
       const raw = recountInput.current[p.id];
@@ -693,6 +729,86 @@ export default function App() {
     setView('history');
     setOpenHistory(o => ({ ...o, [rec.id]: true }));
     toast(changes.length + ' line' + (changes.length === 1 ? '' : 's') + ' adjusted at ' + venueName(venue));
+  }
+
+  // ---- stock take ----
+  // True only if that location has a stock take open right now, checked
+  // fresh against the database (not local state) so it's accurate even
+  // if someone else started one from another device.
+  async function locationHasOpenStockTake(location) {
+    const { data, error } = await supabase.from('stock_takes').select('id').eq('location', location).eq('status', 'in_progress').limit(1);
+    if (error) return false; // fail open rather than block on a network hiccup
+    return !!(data && data.length);
+  }
+
+  async function loadStockTakeLines(stockTakeId) {
+    setStockTakeLoading(true);
+    const { data, error } = await supabase.from('stock_take_lines').select('*').eq('stock_take_id', stockTakeId);
+    setStockTakeLoading(false);
+    if (error) { toast("Couldn't load counted lines: " + error.message); return; }
+    const map = {};
+    (data || []).forEach(r => { map[r.product_id] = stockTakeLineFromRow(r); });
+    setStockTakeLines(map);
+  }
+
+  async function onStartStockTake(location) {
+    // Resume whatever's already open for this location rather than
+    // starting a second one - the unique index would reject a duplicate
+    // insert anyway, but checking first gives a much better message.
+    const { data: existing, error: findErr } = await supabase.from('stock_takes').select('*').eq('location', location).eq('status', 'in_progress').maybeSingle();
+    if (findErr) { toast("Couldn't check for an open stock take: " + findErr.message); return; }
+    let row = existing;
+    if (!row) {
+      const { data, error } = await supabase.from('stock_takes').insert({ location, started_by: session ? session.user.id : null }).select().single();
+      if (error) { toast("Couldn't start stock take: " + error.message); return; }
+      row = data;
+      logActivity('Started stock take', venueName(location));
+    }
+    setStockTake(stockTakeFromRow(row));
+    setStockTakeCategory(CATEGORIES[0]); setStockTakeSearch(''); setStockTakeUncountedOnly(false); setStockTakeConfirming(false);
+    setSheet(null); setView('stockTake');
+    loadStockTakeLines(row.id);
+  }
+
+  // Autosaves a single product's count - called on blur, not on every
+  // keystroke, so closing the tab or losing signal mid-type loses at most
+  // the row you were actively editing, never anything already committed.
+  async function saveStockTakeLine(productId, caseQty, unitQty) {
+    if (!stockTake) return;
+    const cq = Math.max(0, Number(caseQty) || 0);
+    const uq = Math.max(0, Number(unitQty) || 0);
+    setStockTakeLines(lines => ({ ...lines, [productId]: { ...(lines[productId] || {}), productId, caseQty: cq, unitQty: uq, counted: true } }));
+    const { data, error } = await supabase.from('stock_take_lines')
+      .upsert({ stock_take_id: stockTake.id, product_id: productId, case_qty: cq, unit_qty: uq, counted: true, updated_at: new Date().toISOString() }, { onConflict: 'stock_take_id,product_id' })
+      .select().single();
+    if (error) { toast("Couldn't save count: " + error.message); return; }
+    setStockTakeLines(lines => ({ ...lines, [productId]: stockTakeLineFromRow(data) }));
+  }
+
+  async function onAbandonStockTake() {
+    if (!stockTake) return;
+    const { error } = await supabase.from('stock_takes').update({ status: 'abandoned' }).eq('id', stockTake.id);
+    if (error) { toast("Couldn't abandon: " + error.message); return; }
+    logActivity('Abandoned stock take', venueName(stockTake.location));
+    toast('Stock take abandoned — nothing was changed');
+    setStockTake(null); setStockTakeLines({}); setSheet(null); setView('stock');
+  }
+
+  async function onConfirmStockTake(force) {
+    if (!stockTake) return;
+    const relevant = products.filter(p => productAppliesTo(p, stockTake.location));
+    const uncounted = relevant.filter(p => !(stockTakeLines[p.id] && stockTakeLines[p.id].counted));
+    if (uncounted.length && !force) { setStockTakeConfirming(true); return; }
+    const { error } = await supabase.rpc('confirm_stock_take', { p_stock_take_id: stockTake.id, p_confirmed_by: session ? session.user.id : null });
+    if (error) { toast("Couldn't confirm: " + error.message); return; }
+    // The function is the source of truth for the numbers now (it zeroes
+    // anything uncounted) - refetch rather than trying to replay its logic
+    // client-side, so what's shown always matches exactly what was saved.
+    const { data: freshProducts, error: refetchErr } = await supabase.from('products').select('*').order('name');
+    if (!refetchErr) setProducts((freshProducts || []).map(productFromRow));
+    logActivity('Confirmed stock take', venueName(stockTake.location) + ' — ' + (relevant.length - uncounted.length) + ' of ' + relevant.length + ' products counted');
+    toast('Stock take confirmed for ' + venueName(stockTake.location));
+    setStockTake(null); setStockTakeLines({}); setStockTakeConfirming(false); setSheet(null); setView('stock');
   }
 
   // ================= derived values (mirrors renderVals()) =================
@@ -866,6 +982,23 @@ export default function App() {
   const eventOrderTotalCost = eventLinesPlanned.reduce((sum, r) => sum + (r.plan ? r.plan.cost : 0), 0);
   const sortedEvents = events.slice().sort((a, b) => (a.eventDate || '9999').localeCompare(b.eventDate || '9999'));
 
+  // ---- stock take derived values ----
+  const stockTakeProducts = stockTake ? products.filter(p => productAppliesTo(p, stockTake.location)) : [];
+  const stockTakeCategoryProgress = CATEGORIES.map(cat => {
+    const items = stockTakeProducts.filter(p => p.category === cat);
+    const counted = items.filter(p => stockTakeLines[p.id] && stockTakeLines[p.id].counted).length;
+    return { cat, counted, total: items.length };
+  }).filter(c => c.total > 0);
+  const stockTakeQuery = stockTakeSearch.trim().toLowerCase();
+  const stockTakeRows = stockTakeProducts
+    .filter(p => p.category === stockTakeCategory)
+    .filter(p => !stockTakeQuery || p.name.toLowerCase().includes(stockTakeQuery))
+    .filter(p => !stockTakeUncountedOnly || !(stockTakeLines[p.id] && stockTakeLines[p.id].counted))
+    .slice().sort((a, b) => a.name.localeCompare(b.name))
+    .map(p => ({ product: p, line: stockTakeLines[p.id] || null }));
+  const stockTakeCountedTotal = stockTakeProducts.filter(p => stockTakeLines[p.id] && stockTakeLines[p.id].counted).length;
+  const stockTakeUncountedTotal = stockTakeProducts.length - stockTakeCountedTotal;
+
   useEffect(() => {
     if (editingProduct && nameRef.current && !filledFlag.current) {
       nameRef.current.value = editingProduct.name;
@@ -886,7 +1019,7 @@ export default function App() {
 
   const tabOn = (key) => effectiveView === key
     || (key === 'sessions' && effectiveView === 'sessionDetail')
-    || (key === 'stock' && (effectiveView === 'recount' || effectiveView === 'siteStock'))
+    || (key === 'stock' && (effectiveView === 'recount' || effectiveView === 'siteStock' || effectiveView === 'stockTake'))
     || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity' || effectiveView === 'uniform' || effectiveView === 'ordering' || effectiveView === 'eventDetail' || effectiveView === 'deliveries'))
     || (effectiveView === 'count' && ((key === 'transfers' && c && c.mode === 'transfer') || (key === 'more' && c && c.mode === 'delivery') || (key === 'sessions' && c && (c.mode === 'out' || c.mode === 'back'))));
   const tabs = [
@@ -1259,6 +1392,7 @@ export default function App() {
             statProducts={products.filter(p => productAppliesTo(p, sv)).length} statLow={statLow} statOpen={openSessions.length}
             ownerSections={ownerSections} noProducts={!products.some(p => productAppliesTo(p, sv))}
             onOpenRecount={() => { setRecount(r => ({ ...r, venue: sv })); setView('recount'); }}
+            onOpenStockTake={() => { setDraft({ venue: sv || 'lc' }); openSheet('stockTakeStart'); }}
             onGoProducts={() => go('products')}
             stockVenueName={venueName(sv)}
             onBack={() => go('stock')}
@@ -1304,6 +1438,22 @@ export default function App() {
             sites={sites} recount={recount} pickVenue={(id) => setRecount(r => ({ ...r, venue: id }))}
             rows={products.filter(p => productAppliesTo(p, recount.venue)).map(p => ({ id: p.id, name: p.name, current: stockAt(p, recount.venue) }))}
             recountInput={recountInput} onSave={saveRecount} onBack={() => setView('siteStock')}
+          />
+        )}
+        {effectiveView === 'stockTake' && stockTake && (
+          <StockTakeScreen
+            stockTake={stockTake} venueName={venueName}
+            categoryProgress={stockTakeCategoryProgress}
+            category={stockTakeCategory} setCategory={setStockTakeCategory}
+            search={stockTakeSearch} setSearch={setStockTakeSearch}
+            uncountedOnly={stockTakeUncountedOnly} setUncountedOnly={setStockTakeUncountedOnly}
+            rows={stockTakeRows} onSaveLine={saveStockTakeLine}
+            loading={stockTakeLoading}
+            countedTotal={stockTakeCountedTotal} uncountedTotal={stockTakeUncountedTotal}
+            confirming={stockTakeConfirming} onCancelConfirm={() => setStockTakeConfirming(false)}
+            onConfirm={() => onConfirmStockTake(false)} onConfirmAnyway={() => onConfirmStockTake(true)}
+            onAbandon={onAbandonStockTake}
+            onBack={() => { if (stockTakeConfirming) { setStockTakeConfirming(false); return; } setView('stock'); }}
           />
         )}
         {effectiveView === 'deliveries' && (
@@ -1492,6 +1642,23 @@ export default function App() {
           }))} />
           <ErrorText>{sheetError}</ErrorText>
           <FilledButton onClick={onStartTransfer}>Count what's going</FilledButton>
+        </Sheet>
+      )}
+
+      {sheet === 'stockTakeStart' && (
+        <Sheet title="Start stock take" onClose={closeSheet} onBackdrop={closeSheet}>
+          <div style={{ fontSize: 12.5, color: T.textSecondary, lineHeight: 1.5, marginBottom: 16 }}>
+            Starts completely blank — nothing is pre-filled from previous counts. While this is open, sessions can't take stock out of or return stock to this location.
+          </div>
+          <FieldLabel>Location</FieldLabel>
+          <SegmentedTabs options={sites.map(v => ({
+            name: v.name, pick: () => setDraft(d => ({ ...(d || {}), venue: v.id })),
+            edge: (draft && draft.venue) === v.id ? T.accent : 'transparent',
+            bg: (draft && draft.venue) === v.id ? 'rgba(145,132,217,.12)' : 'transparent',
+            tone: (draft && draft.venue) === v.id ? T.accentLight : T.textSecondary,
+          }))} />
+          <ErrorText>{sheetError}</ErrorText>
+          <FilledButton onClick={() => onStartStockTake((draft && draft.venue) || 'lc')}>Start counting</FilledButton>
         </Sheet>
       )}
 
@@ -1892,7 +2059,7 @@ function SitePickerScreen({ sites, products, openSessions, onSelectSite }) {
   );
 }
 
-function StockScreen({ isAdmin, sites, sv, setStockVenue, statProducts, statLow, statOpen, ownerSections, noProducts, onOpenRecount, onGoProducts, stockVenueName, onBack }) {
+function StockScreen({ isAdmin, sites, sv, setStockVenue, statProducts, statLow, statOpen, ownerSections, noProducts, onOpenRecount, onOpenStockTake, onGoProducts, stockVenueName, onBack }) {
   const [collapsed, setCollapsed] = useState({});
   return (
     <div>
@@ -1906,7 +2073,12 @@ function StockScreen({ isAdmin, sites, sv, setStockVenue, statProducts, statLow,
         <StatCard value={statLow} label="Below par" color={T.warn} />
         <StatCard value={statOpen} label="Open" color={T.text} />
       </div>
-      {isAdmin && <OutlineButton icon="ph-clipboard-text" onClick={onOpenRecount}>Recount stock</OutlineButton>}
+      {isAdmin && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: noProducts ? 0 : 16 }}>
+          <FilledButton onClick={onOpenStockTake}>Start stock take</FilledButton>
+          <OutlineButton icon="ph-clipboard-text" onClick={onOpenRecount}>Quick recount</OutlineButton>
+        </div>
+      )}
       {noProducts && (
         <div style={{ marginTop: 16 }}>
           <EmptyState
@@ -2800,6 +2972,130 @@ function EventDetailScreen({ event, venueName, fmt, lines, totalCost, defaultOrd
       <button onClick={onDelete} style={{ background: 'none', border: 'none', color: T.textMuted, fontSize: 13, cursor: 'pointer', marginTop: 4, padding: 0 }}>
         Delete event
       </button>
+    </div>
+  );
+}
+
+function StockTakeRow({ product, line, onSaveLine }) {
+  const [caseQty, setCaseQty] = useState(line ? String(line.caseQty || '') : '');
+  const [unitQty, setUnitQty] = useState(line ? String(line.unitQty || '') : '');
+  // Re-sync if this row's saved line changes from outside (e.g. after a
+  // failed save reverted it) - keyed on the line's own id/values, not on
+  // every render, so it doesn't fight with what's being typed.
+  useEffect(() => {
+    setCaseQty(line ? String(line.caseQty || '') : '');
+    setUnitQty(line ? String(line.unitQty || '') : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [line ? line.id : null, line ? line.caseQty : null, line ? line.unitQty : null]);
+  const counted = !!(line && line.counted);
+  function commit() {
+    const cq = product.caseSize ? (Number(caseQty) || 0) : 0;
+    const uq = Number(unitQty) || 0;
+    onSaveLine(product.id, cq, uq);
+  }
+  return (
+    <div style={{
+      background: T.card, borderRadius: 8, padding: 12, marginBottom: 8,
+      border: `1px solid ${counted ? 'rgba(145,132,217,.35)' : 'rgba(233,233,237,.09)'}`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <i className={`ph ${counted ? 'ph-check-circle' : 'ph-circle-dashed'}`} style={{ color: counted ? T.accent : T.textMuted, fontSize: 16, flex: 'none' }} />
+        <div style={{ flex: 1, fontSize: 14.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{product.name}</div>
+        <div style={{ fontSize: 11.5, color: T.textMuted, flex: 'none' }}>{product.unit}</div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: product.caseSize ? '1fr 1fr' : '1fr', gap: 8 }}>
+        {product.caseSize ? (
+          <>
+            <input
+              type="number" inputMode="decimal" placeholder="Cases" value={caseQty}
+              onChange={(e) => setCaseQty(e.target.value)} onBlur={commit}
+              style={{ ...inputStyle, padding: '11px 12px', fontSize: 15 }}
+            />
+            <input
+              type="number" inputMode="decimal" placeholder={'Single ' + product.unit.toLowerCase() + 's'} value={unitQty}
+              onChange={(e) => setUnitQty(e.target.value)} onBlur={commit}
+              style={{ ...inputStyle, padding: '11px 12px', fontSize: 15 }}
+            />
+          </>
+        ) : (
+          <input
+            type="number" inputMode="decimal" placeholder="Quantity" value={unitQty}
+            onChange={(e) => setUnitQty(e.target.value)} onBlur={commit}
+            style={{ ...inputStyle, padding: '11px 12px', fontSize: 15 }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StockTakeScreen({
+  stockTake, venueName, categoryProgress, category, setCategory, search, setSearch,
+  uncountedOnly, setUncountedOnly, rows, onSaveLine, loading, countedTotal, uncountedTotal,
+  confirming, onCancelConfirm, onConfirm, onConfirmAnyway, onAbandon, onBack,
+}) {
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 10, padding: 0 }}>
+        <i className="ph ph-arrow-left" /> Stock
+      </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <div style={{ fontSize: 22, fontWeight: 500, letterSpacing: '-.02em', flex: 1 }}>{venueName(stockTake.location)}</div>
+        <span style={{ fontSize: 11, fontWeight: 500, color: T.accentLight, background: 'rgba(145,132,217,.14)', borderRadius: 20, padding: '5px 10px', flex: 'none' }}>Stock take</span>
+      </div>
+      <div style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 12 }}>
+        {countedTotal} counted {'·'} {uncountedTotal} left
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4, marginBottom: 10 }}>
+        {categoryProgress.map(c => (
+          <button key={c.cat} onClick={() => setCategory(c.cat)} style={{
+            flex: 'none', padding: '8px 12px', borderRadius: 20, whiteSpace: 'nowrap',
+            border: `1px solid ${category === c.cat ? T.accent : 'rgba(233,233,237,.14)'}`,
+            background: category === c.cat ? 'rgba(145,132,217,.12)' : 'transparent',
+            color: category === c.cat ? T.accentLight : T.textSecondary,
+            fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
+          }}>
+            {c.cat} {'·'} {c.counted}/{c.total}
+          </button>
+        ))}
+      </div>
+
+      <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={'Search ' + category.toLowerCase()} style={{ ...inputStyle, marginBottom: 10 }} />
+      <div onClick={() => setUncountedOnly(v => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, cursor: 'pointer' }}>
+        <div style={{
+          width: 18, height: 18, borderRadius: 5, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          border: `1px solid ${uncountedOnly ? T.accent : 'rgba(233,233,237,.3)'}`,
+          background: uncountedOnly ? 'rgba(145,132,217,.25)' : 'transparent',
+        }}>
+          {uncountedOnly && <i className="ph ph-check" style={{ fontSize: 12, color: T.accentLight }} />}
+        </div>
+        <span style={{ fontSize: 13, color: T.textSecondary }}>Show uncounted only</span>
+      </div>
+
+      {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '20px 0', textAlign: 'center' }}>{'Loading…'}</div>}
+      {!loading && rows.length === 0 && <EmptyState title="Nothing here" body="Nothing matches in this category yet." />}
+      {rows.map(r => <StockTakeRow key={r.product.id} product={r.product} line={r.line} onSaveLine={onSaveLine} />)}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
+        <FilledButton onClick={onConfirm}>Confirm stock take</FilledButton>
+        <button onClick={onAbandon} style={{ background: 'none', border: 'none', color: T.textMuted, fontSize: 13, cursor: 'pointer', padding: 8 }}>Abandon stock take</button>
+      </div>
+
+      {confirming && (
+        <div onClick={onCancelConfirm} style={{ position: 'fixed', inset: 0, background: 'rgba(10,11,18,.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: T.chrome, borderRadius: 14, padding: 20, maxWidth: 340 }}>
+            <div style={{ fontSize: 17, fontWeight: 500, marginBottom: 10 }}>{uncountedTotal} not counted</div>
+            <div style={{ fontSize: 13.5, color: T.textSecondary, lineHeight: 1.55, marginBottom: 18 }}>
+              {plural(uncountedTotal, 'product')} at {venueName(stockTake.location)} {uncountedTotal === 1 ? "wasn't" : "weren't"} counted. Confirming now records {uncountedTotal === 1 ? 'it' : 'them'} as 0 here — the number it had before is kept in history, but this stock take will show none left.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={onCancelConfirm} style={{ flex: 1, padding: 14, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, cursor: 'pointer' }}>Go back</button>
+              <button onClick={onConfirmAnyway} style={{ flex: 1, padding: 14, borderRadius: 8, border: 'none', background: T.danger, color: '#fff', fontWeight: 500, cursor: 'pointer' }}>Confirm anyway</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
