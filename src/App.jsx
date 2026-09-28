@@ -138,6 +138,21 @@ function nextCrateTag(code, existingTags) {
   return code + n;
 }
 
+// A local, durable outbox for stock-take writes. Every count and crate
+// change is recorded here BEFORE it's sent to Supabase, and only cleared
+// once the server has confirmed it - so a dropped connection (a real
+// risk counting stock inside a shipping container) or the app/tab
+// closing mid-request loses nothing: it's still on the device, and gets
+// retried automatically. This is deliberately separate from React state,
+// which a crash or force-close can lose before it's ever rendered again.
+const OUTBOX_KEY = 'wetstock_outbox_v1';
+function readOutboxFromStorage() {
+  try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || '{}'); } catch { return {}; }
+}
+function writeOutboxToStorage(box) {
+  try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(box)); } catch { /* storage unavailable - the network write is still attempted */ }
+}
+
 // Loose (split) stock plus whatever's still sealed in cases, converted to
 // units - e.g. 2 cases of 24 + 6 loose = 54 total. Below-par checks and the
 // stock display should compare against this, not the loose count alone.
@@ -263,6 +278,8 @@ export default function App() {
   const [crateProductQuery, setCrateProductQuery] = useState('');
   const [crateColorId, setCrateColorId] = useState('');
   const [addingCrateColor, setAddingCrateColor] = useState(false);
+  const [outbox, setOutbox] = useState(() => readOutboxFromStorage());
+  const outboxRetryTimer = useRef(null);
 
   // Products and sessions load from and save to Supabase. Everything else
   // (sites, deliveries, transfers, recounts, stock levels) is still
@@ -361,10 +378,104 @@ export default function App() {
     return () => { cancelled = true; };
   }, [session]);
 
+  // Catch up on anything left in the outbox from a previous session
+  // (app was killed, or there was no signal at the time) as soon as
+  // we're back online, and keep trying periodically while a stock take
+  // is actually open - not relying on the browser's 'online' event alone,
+  // since it isn't always reliable on mobile.
+  useEffect(() => {
+    if (!session) return;
+    flushOutbox();
+    function onOnline() { flushOutbox(); }
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  useEffect(() => {
+    if (!stockTake) return;
+    const id = setInterval(() => { flushOutbox(); }, 20000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stockTake]);
+
+  function setOutboxEntry(key, entry) {
+    setOutbox(prev => {
+      const next = { ...prev };
+      if (entry) next[key] = entry; else delete next[key];
+      writeOutboxToStorage(next);
+      return next;
+    });
+  }
+
+  function scheduleOutboxRetry() {
+    if (outboxRetryTimer.current) return;
+    outboxRetryTimer.current = setTimeout(() => { outboxRetryTimer.current = null; flushOutbox(); }, 15000);
+  }
+
+  async function pushStockTakeLine(key, stockTakeId, productId, cq, uq) {
+    const { data, error } = await supabase.from('stock_take_lines')
+      .upsert({ stock_take_id: stockTakeId, product_id: productId, case_qty: cq, unit_qty: uq, counted: true, updated_at: new Date().toISOString() }, { onConflict: 'stock_take_id,product_id' })
+      .select().single();
+    if (error) { scheduleOutboxRetry(); return false; }
+    setOutboxEntry(key, null);
+    setStockTake(cur => {
+      if (cur && cur.id === stockTakeId) {
+        setStockTakeLines(lines => ({ ...lines, [productId]: stockTakeLineFromRow(data) }));
+      }
+      return cur;
+    });
+    return true;
+  }
+
+  async function pushCrate(key, entry) {
+    const row = { location: entry.location, tag: entry.tag, color_id: entry.colorId, product_id: entry.productId, quantity: entry.quantity, stock_take_id: entry.stockTakeId };
+    if (entry.editingCrateId) {
+      const { data, error } = await supabase.from('crates').update(row).eq('id', entry.editingCrateId).select().single();
+      if (error) { scheduleOutboxRetry(); return false; }
+      setOutboxEntry(key, null);
+      setCrates(cs => cs.map(c => c.id === entry.editingCrateId ? crateFromRow(data) : c));
+      return true;
+    }
+    const { data, error } = await supabase.from('crates').insert(row).select().single();
+    if (error) {
+      if (error.code === '23505') { scheduleOutboxRetry(); return false; } // tag taken - leave queued rather than silently drop
+      scheduleOutboxRetry(); return false;
+    }
+    setOutboxEntry(key, null);
+    setCrates(cs => cs.map(c => c.pending && c.location === entry.location && c.tag === entry.tag ? crateFromRow(data) : c));
+    return true;
+  }
+
+  // Retries every queued write. Called on reconnect, periodically while a
+  // stock take is open, and right after loading a take/its crates, so a
+  // device that was offline while counting catches up as soon as it can.
+  async function flushOutbox() {
+    const box = readOutboxFromStorage();
+    for (const [key, entry] of Object.entries(box)) {
+      if (entry.type === 'stockTakeLine') await pushStockTakeLine(key, entry.stockTakeId, entry.productId, entry.caseQty, entry.unitQty);
+      else if (entry.type === 'crate') await pushCrate(key, entry);
+    }
+  }
+
   async function loadCrates(location) {
     const { data, error } = await supabase.from('crates').select('*').eq('location', location).eq('archived', false).order('tag');
     if (error) { toast("Couldn't load crates: " + error.message); return; }
-    setCrates((data || []).map(crateFromRow));
+    let list = (data || []).map(crateFromRow);
+    // Recover anything for this location that's still only on this
+    // device (an edit or a brand new crate that never reached the
+    // server) before it can be masked by what the server has.
+    const box = readOutboxFromStorage();
+    Object.entries(box).forEach(([key, entry]) => {
+      if (entry.type !== 'crate' || entry.location !== location) return;
+      if (entry.editingCrateId) {
+        list = list.map(c => c.id === entry.editingCrateId ? { ...c, tag: entry.tag, colorId: entry.colorId, productId: entry.productId, quantity: entry.quantity } : c);
+      } else if (!list.some(c => c.tag === entry.tag)) {
+        list = list.concat([{ id: key.slice('crate:'.length), location: entry.location, tag: entry.tag, colorId: entry.colorId, productId: entry.productId, quantity: entry.quantity, stockTakeId: entry.stockTakeId, pending: true }]);
+      }
+    });
+    setCrates(list);
+    flushOutbox();
   }
 
   async function reloadUniform() {
@@ -816,7 +927,17 @@ export default function App() {
     if (error) { toast("Couldn't load counted lines: " + error.message); return; }
     const map = {};
     (data || []).forEach(r => { map[r.product_id] = stockTakeLineFromRow(r); });
+    // Recover anything counted on this device that never reached the
+    // server yet - closed mid-count, or no signal at the time - before
+    // it can be masked by what the server currently has.
+    const box = readOutboxFromStorage();
+    Object.values(box).forEach(entry => {
+      if (entry.type === 'stockTakeLine' && entry.stockTakeId === stockTakeId) {
+        map[entry.productId] = { productId: entry.productId, caseQty: entry.caseQty, unitQty: entry.unitQty, counted: true };
+      }
+    });
     setStockTakeLines(map);
+    flushOutbox();
   }
 
   async function onStartStockTake(location) {
@@ -847,12 +968,13 @@ export default function App() {
     if (!stockTake) return;
     const cq = Math.max(0, Number(caseQty) || 0);
     const uq = Math.max(0, Number(unitQty) || 0);
+    const key = 'line:' + stockTake.id + ':' + productId;
+    // Written to this device before anything is sent - see the outbox
+    // comment above. Cleared only once pushStockTakeLine confirms the
+    // server actually has it.
+    setOutboxEntry(key, { type: 'stockTakeLine', stockTakeId: stockTake.id, productId, caseQty: cq, unitQty: uq });
     setStockTakeLines(lines => ({ ...lines, [productId]: { ...(lines[productId] || {}), productId, caseQty: cq, unitQty: uq, counted: true } }));
-    const { data, error } = await supabase.from('stock_take_lines')
-      .upsert({ stock_take_id: stockTake.id, product_id: productId, case_qty: cq, unit_qty: uq, counted: true, updated_at: new Date().toISOString() }, { onConflict: 'stock_take_id,product_id' })
-      .select().single();
-    if (error) { toast("Couldn't save count: " + error.message); return; }
-    setStockTakeLines(lines => ({ ...lines, [productId]: stockTakeLineFromRow(data) }));
+    await pushStockTakeLine(key, stockTake.id, productId, cq, uq);
   }
 
   // A product that arrives without a case size gets asked "units per
@@ -921,20 +1043,22 @@ export default function App() {
     if (dupe) { setSheetError('That tag is already used at this location.'); return; }
     const qty = Math.max(0, Number(crateQtyRef.current ? crateQtyRef.current.value : 0) || 0);
     const productName = (products.find(p => p.id === crateProductId) || {}).name || '';
-    const row = { location: stockTake.location, tag, color_id: crateColorId || null, product_id: crateProductId, quantity: qty, stock_take_id: stockTake.id };
+    const clientId = editingCrateId || ('temp' + Date.now());
+    const key = 'crate:' + clientId;
+    const entry = { type: 'crate', location: stockTake.location, tag, colorId: crateColorId || null, productId: crateProductId, quantity: qty, stockTakeId: stockTake.id, editingCrateId: editingCrateId || null };
+    // Written to this device first, same as a count - a crate you just
+    // physically labelled and counted must survive a dropped connection
+    // just as reliably as anything else here.
+    setOutboxEntry(key, entry);
     if (editingCrateId) {
-      const { data, error } = await supabase.from('crates').update(row).eq('id', editingCrateId).select().single();
-      if (error) { setSheetError('Could not save: ' + error.message); return; }
-      setCrates(cs => cs.map(c => c.id === editingCrateId ? crateFromRow(data) : c));
-      logActivity('Updated crate', tag + ' — ' + productName);
+      setCrates(cs => cs.map(c => c.id === editingCrateId ? { ...c, tag, colorId: crateColorId || null, productId: crateProductId, quantity: qty } : c));
     } else {
-      const { data, error } = await supabase.from('crates').insert(row).select().single();
-      if (error) { setSheetError('Could not save: ' + error.message); return; }
-      setCrates(cs => [...cs, crateFromRow(data)]);
-      logActivity('Added crate', tag + ' — ' + productName);
+      setCrates(cs => [...cs, { id: clientId, location: stockTake.location, tag, colorId: crateColorId || null, productId: crateProductId, quantity: qty, stockTakeId: stockTake.id, pending: true }]);
     }
     setSheet(null); setSheetError('');
     toast('Crate saved');
+    logActivity(editingCrateId ? 'Updated crate' : 'Added crate', tag + ' — ' + productName);
+    await pushCrate(key, entry);
   }
 
   async function onDeleteCrate(id) {
@@ -956,8 +1080,22 @@ export default function App() {
     setStockTake(null); setStockTakeLines({}); setSheet(null); setView('stock');
   }
 
+  function outboxPendingCount(stockTakeId) {
+    return Object.values(readOutboxFromStorage()).filter(e => e.stockTakeId === stockTakeId).length;
+  }
+
   async function onConfirmStockTake(force) {
     if (!stockTake) return;
+    // Confirming reads whatever's currently saved server-side - if
+    // anything typed on this device hasn't synced yet, confirming now
+    // would use stale or missing numbers (and zero out a count that's
+    // only sitting in the outbox). Refuse until it's actually through.
+    const pending = outboxPendingCount(stockTake.id);
+    if (pending > 0) {
+      flushOutbox();
+      toast(pending + ' change' + (pending === 1 ? '' : 's') + " haven't synced yet — check your connection and try again.");
+      return;
+    }
     const relevant = products.filter(p => productAppliesTo(p, stockTake.location));
     const uncounted = relevant.filter(p => !(stockTakeLines[p.id] && stockTakeLines[p.id].counted));
     if (uncounted.length && !force) { setStockTakeConfirming(true); return; }
@@ -1168,6 +1306,7 @@ export default function App() {
     color: crateColors.find(col => col.id === c.colorId) || null,
   }));
   const cratesTotalUnits = crates.reduce((sum, c) => sum + c.quantity, 0);
+  const pendingSyncCount = stockTake ? Object.values(outbox).filter(e => e.stockTakeId === stockTake.id).length : 0;
 
   useEffect(() => {
     if (editingProduct && nameRef.current && !filledFlag.current) {
@@ -1628,6 +1767,7 @@ export default function App() {
             section={stockTakeSection} setSection={setStockTakeSection}
             crateRows={crateRows} cratesTotalUnits={cratesTotalUnits}
             onNewCrate={openNewCrateSheet} onEditCrate={openEditCrateSheet}
+            pendingSyncCount={pendingSyncCount} onRetrySync={flushOutbox}
           />
         )}
         {effectiveView === 'deliveries' && (
@@ -3293,6 +3433,7 @@ function StockTakeScreen({
   uncountedOnly, setUncountedOnly, rows, onSaveLine, onSetCaseSize, crateTotalsByProduct, loading, countedTotal, uncountedTotal,
   confirming, onCancelConfirm, onConfirm, onConfirmAnyway, onAbandon, onBack,
   section, setSection, crateRows, cratesTotalUnits, onNewCrate, onEditCrate,
+  pendingSyncCount, onRetrySync,
 }) {
   return (
     <div>
@@ -3306,6 +3447,18 @@ function StockTakeScreen({
       <div style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 12 }}>
         {countedTotal} counted {'·'} {uncountedTotal} left {'·'} {plural(crateRows.length, 'crate')} ({cratesTotalUnits} units)
       </div>
+
+      {pendingSyncCount > 0 && (
+        <div onClick={onRetrySync} style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '10px 13px', borderRadius: 8, cursor: 'pointer',
+          background: 'rgba(216,162,79,.10)', border: '1px solid rgba(216,162,79,.35)', marginBottom: 14,
+        }}>
+          <i className="ph ph-cloud-slash" style={{ color: T.warn, fontSize: 17, flex: 'none' }} />
+          <span style={{ fontSize: 12.5, color: T.warn, flex: 1, lineHeight: 1.4 }}>
+            {plural(pendingSyncCount, 'change')} saved on this device, not yet online {'—'} tap to retry.
+          </span>
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 8, padding: 4, background: T.card, border: '1px solid rgba(233,233,237,.1)', borderRadius: 8, marginBottom: 14 }}>
         {[['crates', 'Crates'], ['count', 'Count stock']].map(([key, label]) => (
