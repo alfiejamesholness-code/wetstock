@@ -103,6 +103,41 @@ function stockTakeLineFromRow(row) {
   };
 }
 
+function crateColorFromRow(row) {
+  return { id: row.id, label: row.label, swatch: row.swatch, sort: row.sort };
+}
+
+function crateFromRow(row) {
+  return {
+    id: row.id,
+    location: row.location,
+    tag: row.tag,
+    colorId: row.color_id,
+    productId: row.product_id,
+    quantity: Number(row.quantity) || 0,
+    stockTakeId: row.stock_take_id,
+  };
+}
+
+// A short code from a product's name to seed its crate tags - "Coca Cola"
+// -> "cc", "Peroni" -> "per". Just a starting suggestion; you can always
+// type over it.
+function productCode(name) {
+  const words = (name || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+  if (!words.length) return 'xx';
+  if (words.length === 1) return words[0].slice(0, 3) || 'xx';
+  return words.slice(0, 3).map(w => w[0]).join('');
+}
+
+// The next free "code + number" tag, e.g. cc1, cc2, cc3, skipping
+// whatever's already taken at this location (case-insensitive).
+function nextCrateTag(code, existingTags) {
+  const used = new Set((existingTags || []).map(t => t.toLowerCase()));
+  let n = 1;
+  while (used.has((code + n).toLowerCase())) n++;
+  return code + n;
+}
+
 // Loose (split) stock plus whatever's still sealed in cases, converted to
 // units - e.g. 2 cases of 24 + 6 loose = 54 total. Below-par checks and the
 // stock display should compare against this, not the loose count alone.
@@ -219,6 +254,15 @@ export default function App() {
   const [stockTakeSearch, setStockTakeSearch] = useState('');
   const [stockTakeUncountedOnly, setStockTakeUncountedOnly] = useState(false);
   const [stockTakeConfirming, setStockTakeConfirming] = useState(false); // showing the "N uncounted" warning
+  const [stockTakeSection, setStockTakeSection] = useState('crates'); // 'crates' | 'count'
+  const [crateColors, setCrateColors] = useState([]);
+  const [crates, setCrates] = useState([]); // crates at the active stock take's location
+  const [crateSheetMode, setCrateSheetMode] = useState('new'); // 'new' | 'edit'
+  const [editingCrateId, setEditingCrateId] = useState(null);
+  const [crateProductId, setCrateProductId] = useState('');
+  const [crateProductQuery, setCrateProductQuery] = useState('');
+  const [crateColorId, setCrateColorId] = useState('');
+  const [addingCrateColor, setAddingCrateColor] = useState(false);
 
   // Products and sessions load from and save to Supabase. Everything else
   // (sites, deliveries, transfers, recounts, stock levels) is still
@@ -302,6 +346,26 @@ export default function App() {
       if (!error && data && data.default_order_buffer != null) setDefaultOrderBuffer(Number(data.default_order_buffer));
     });
   }, [session]);
+
+  // Crate colours are defined once and reused everywhere - a small global
+  // list, loaded up front rather than per stock take.
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    async function load() {
+      const { data, error } = await supabase.from('crate_colors').select('*').order('sort');
+      if (cancelled) return;
+      if (!error) setCrateColors((data || []).map(crateColorFromRow));
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [session]);
+
+  async function loadCrates(location) {
+    const { data, error } = await supabase.from('crates').select('*').eq('location', location).eq('archived', false).order('tag');
+    if (error) { toast("Couldn't load crates: " + error.message); return; }
+    setCrates((data || []).map(crateFromRow));
+  }
 
   async function reloadUniform() {
     const { data, error } = await supabase.from('uniform_items').select('*').order('sort');
@@ -411,6 +475,10 @@ export default function App() {
   const lineServingMlRef = useRef(null);
   const lineBufferRef = useRef(null);
   const lineNotesRef = useRef(null);
+  const crateTagRef = useRef(null);
+  const crateQtyRef = useRef(null);
+  const newColorLabelRef = useRef(null);
+  const newColorSwatchRef = useRef(null);
   const recountInput = useRef({});
   const toastTimer = useRef(null);
   const scanTimer = useRef(null);
@@ -766,8 +834,10 @@ export default function App() {
     }
     setStockTake(stockTakeFromRow(row));
     setStockTakeCategory(CATEGORIES[0]); setStockTakeSearch(''); setStockTakeUncountedOnly(false); setStockTakeConfirming(false);
+    setStockTakeSection('crates');
     setSheet(null); setView('stockTake');
     loadStockTakeLines(row.id);
+    loadCrates(location);
   }
 
   // Autosaves a single product's count - called on blur, not on every
@@ -794,6 +864,87 @@ export default function App() {
     setProducts(ps => ps.map(p => p.id === productId ? { ...p, caseSize: unitsPerCase } : p));
     const { error } = await supabase.from('products').update({ case_size: unitsPerCase }).eq('id', productId);
     if (error) toast("Couldn't save units per case: " + error.message);
+  }
+
+  // ---- crates ----
+  function openNewCrateSheet() {
+    setCrateSheetMode('new'); setEditingCrateId(null);
+    setCrateProductId(''); setCrateProductQuery(''); setCrateColorId(crateColors[0] ? crateColors[0].id : '');
+    setAddingCrateColor(false);
+    openSheet('crate');
+  }
+  function openEditCrateSheet(crateId) {
+    const c = crates.find(x => x.id === crateId);
+    if (!c) return;
+    setCrateSheetMode('edit'); setEditingCrateId(crateId);
+    setCrateProductId(c.productId); setCrateProductQuery(''); setCrateColorId(c.colorId || '');
+    setAddingCrateColor(false);
+    openSheet('crate');
+  }
+  // Suggest the next free tag the moment a product is picked for a new
+  // crate - never overrides what's already been typed for an edit.
+  useEffect(() => {
+    if (sheet !== 'crate' || crateSheetMode !== 'new' || !crateProductId) return;
+    const p = products.find(x => x.id === crateProductId);
+    if (!p || !crateTagRef.current) return;
+    crateTagRef.current.value = nextCrateTag(productCode(p.name), crates.map(c => c.tag));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crateProductId, sheet, crateSheetMode]);
+  // Prefill tag/quantity when opening an existing crate to edit.
+  useEffect(() => {
+    if (sheet !== 'crate' || crateSheetMode !== 'edit' || !editingCrateId) return;
+    const c = crates.find(x => x.id === editingCrateId);
+    if (!c) return;
+    if (crateTagRef.current) crateTagRef.current.value = c.tag;
+    if (crateQtyRef.current) crateQtyRef.current.value = c.quantity || '';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingCrateId, sheet, crateSheetMode]);
+
+  async function onAddCrateColor(label, swatch) {
+    const l = (label || '').trim();
+    if (!l) return;
+    const sort = crateColors.reduce((m, c) => Math.max(m, c.sort || 0), 0) + 1;
+    const { data, error } = await supabase.from('crate_colors').insert({ label: l, swatch: swatch || '#9184d9', sort }).select().single();
+    if (error) { toast("Couldn't add colour: " + error.message); return; }
+    const created = crateColorFromRow(data);
+    setCrateColors(cs => [...cs, created]);
+    setCrateColorId(created.id);
+    setAddingCrateColor(false);
+  }
+
+  async function onSaveCrate() {
+    if (!stockTake) return;
+    const tag = crateTagRef.current ? crateTagRef.current.value.trim() : '';
+    if (!tag) { setSheetError('Give this crate a tag.'); return; }
+    if (!crateProductId) { setSheetError('Pick a product.'); return; }
+    const dupe = crates.some(c => c.tag.toLowerCase() === tag.toLowerCase() && c.id !== editingCrateId);
+    if (dupe) { setSheetError('That tag is already used at this location.'); return; }
+    const qty = Math.max(0, Number(crateQtyRef.current ? crateQtyRef.current.value : 0) || 0);
+    const productName = (products.find(p => p.id === crateProductId) || {}).name || '';
+    const row = { location: stockTake.location, tag, color_id: crateColorId || null, product_id: crateProductId, quantity: qty, stock_take_id: stockTake.id };
+    if (editingCrateId) {
+      const { data, error } = await supabase.from('crates').update(row).eq('id', editingCrateId).select().single();
+      if (error) { setSheetError('Could not save: ' + error.message); return; }
+      setCrates(cs => cs.map(c => c.id === editingCrateId ? crateFromRow(data) : c));
+      logActivity('Updated crate', tag + ' — ' + productName);
+    } else {
+      const { data, error } = await supabase.from('crates').insert(row).select().single();
+      if (error) { setSheetError('Could not save: ' + error.message); return; }
+      setCrates(cs => [...cs, crateFromRow(data)]);
+      logActivity('Added crate', tag + ' — ' + productName);
+    }
+    setSheet(null); setSheetError('');
+    toast('Crate saved');
+  }
+
+  async function onDeleteCrate(id) {
+    const target = crates.find(c => c.id === id);
+    const { error } = await supabase.from('crates').delete().eq('id', id);
+    if (error) { toast("Couldn't delete: " + error.message); return; }
+    setCrates(cs => cs.filter(c => c.id !== id));
+    setSheet(null); setSheetError('');
+    toast('Crate removed');
+    if (target) logActivity('Deleted crate', target.tag);
   }
 
   async function onAbandonStockTake() {
@@ -1009,6 +1160,14 @@ export default function App() {
     .map(p => ({ product: p, line: stockTakeLines[p.id] || null }));
   const stockTakeCountedTotal = stockTakeProducts.filter(p => stockTakeLines[p.id] && stockTakeLines[p.id].counted).length;
   const stockTakeUncountedTotal = stockTakeProducts.length - stockTakeCountedTotal;
+  const crateTotalsByProduct = {};
+  crates.forEach(c => { crateTotalsByProduct[c.productId] = (crateTotalsByProduct[c.productId] || 0) + c.quantity; });
+  const crateRows = crates.slice().sort((a, b) => a.tag.localeCompare(b.tag)).map(c => ({
+    crate: c,
+    product: products.find(p => p.id === c.productId) || null,
+    color: crateColors.find(col => col.id === c.colorId) || null,
+  }));
+  const cratesTotalUnits = crates.reduce((sum, c) => sum + c.quantity, 0);
 
   useEffect(() => {
     if (editingProduct && nameRef.current && !filledFlag.current) {
@@ -1459,12 +1618,16 @@ export default function App() {
             search={stockTakeSearch} setSearch={setStockTakeSearch}
             uncountedOnly={stockTakeUncountedOnly} setUncountedOnly={setStockTakeUncountedOnly}
             rows={stockTakeRows} onSaveLine={saveStockTakeLine} onSetCaseSize={onSetCaseSize}
+            crateTotalsByProduct={crateTotalsByProduct}
             loading={stockTakeLoading}
             countedTotal={stockTakeCountedTotal} uncountedTotal={stockTakeUncountedTotal}
             confirming={stockTakeConfirming} onCancelConfirm={() => setStockTakeConfirming(false)}
             onConfirm={() => onConfirmStockTake(false)} onConfirmAnyway={() => onConfirmStockTake(true)}
             onAbandon={onAbandonStockTake}
             onBack={() => { if (stockTakeConfirming) { setStockTakeConfirming(false); return; } setView('stock'); }}
+            section={stockTakeSection} setSection={setStockTakeSection}
+            crateRows={crateRows} cratesTotalUnits={cratesTotalUnits}
+            onNewCrate={openNewCrateSheet} onEditCrate={openEditCrateSheet}
           />
         )}
         {effectiveView === 'deliveries' && (
@@ -1670,6 +1833,76 @@ export default function App() {
           }))} />
           <ErrorText>{sheetError}</ErrorText>
           <FilledButton onClick={() => onStartStockTake((draft && draft.venue) || 'lc')}>Start counting</FilledButton>
+        </Sheet>
+      )}
+
+      {sheet === 'crate' && stockTake && (
+        <Sheet title={crateSheetMode === 'edit' ? 'Edit crate' : 'Add new crate'} onClose={closeSheet} onBackdrop={closeSheet}>
+          <FieldLabel>Product</FieldLabel>
+          <input
+            value={crateProductQuery} onChange={(e) => setCrateProductQuery(e.target.value)}
+            placeholder={crateProductId ? (products.find(p => p.id === crateProductId) || {}).name : 'Search products'}
+            style={{ ...inputStyle, marginBottom: 8 }}
+          />
+          <div style={{ maxHeight: 160, overflow: 'auto', border: '1px solid rgba(233,233,237,.12)', borderRadius: 8, marginBottom: 14 }}>
+            {products
+              .filter(p => productAppliesTo(p, stockTake.location))
+              .filter(p => !crateProductQuery.trim() || p.name.toLowerCase().includes(crateProductQuery.trim().toLowerCase()))
+              .slice().sort((a, b) => a.name.localeCompare(b.name))
+              .slice(0, 40)
+              .map(p => (
+                <div key={p.id} onClick={() => { setCrateProductId(p.id); setCrateProductQuery(''); }} style={{
+                  padding: '10px 12px', cursor: 'pointer', fontSize: 13.5, borderBottom: '1px solid rgba(233,233,237,.08)',
+                  background: crateProductId === p.id ? 'rgba(145,132,217,.14)' : 'transparent',
+                  color: crateProductId === p.id ? T.accentLight : T.text,
+                }}>{p.name}</div>
+              ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+            <div>
+              <FieldLabel>Tag</FieldLabel>
+              <input ref={crateTagRef} placeholder="e.g. cc1" style={inputStyle} />
+            </div>
+            <div>
+              <FieldLabel>Quantity (units)</FieldLabel>
+              <input ref={crateQtyRef} type="number" inputMode="decimal" placeholder="0" style={inputStyle} />
+            </div>
+          </div>
+          <FieldLabel>Colour</FieldLabel>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            {crateColors.map(c => (
+              <button key={c.id} onClick={() => setCrateColorId(c.id)} style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 11px', borderRadius: 20,
+                border: `1px solid ${crateColorId === c.id ? T.accent : 'rgba(233,233,237,.16)'}`,
+                background: crateColorId === c.id ? 'rgba(145,132,217,.12)' : 'transparent',
+                color: T.text, fontSize: 12.5, cursor: 'pointer',
+              }}>
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: c.swatch, flex: 'none', border: '1px solid rgba(255,255,255,.2)' }} />
+                {c.label}
+              </button>
+            ))}
+            <button onClick={() => setAddingCrateColor(v => !v)} style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 11px', borderRadius: 20,
+              border: '1px dashed rgba(233,233,237,.3)', background: 'transparent', color: T.textSecondary, fontSize: 12.5, cursor: 'pointer',
+            }}><i className="ph ph-plus" /> New colour</button>
+          </div>
+          {addingCrateColor && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14 }}>
+              <input ref={newColorLabelRef} placeholder="Colour name" style={{ ...inputStyle, flex: 1 }} autoFocus />
+              <input ref={newColorSwatchRef} type="color" defaultValue="#9184d9" style={{ width: 44, height: 44, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', padding: 2, flex: 'none' }} />
+              <button
+                onClick={() => onAddCrateColor(newColorLabelRef.current ? newColorLabelRef.current.value : '', newColorSwatchRef.current ? newColorSwatchRef.current.value : '')}
+                style={{ padding: '0 14px', height: 44, borderRadius: 8, border: 'none', background: 'rgba(145,132,217,.2)', color: T.accentLight, cursor: 'pointer', flex: 'none' }}
+              >Add</button>
+            </div>
+          )}
+          <ErrorText>{sheetError}</ErrorText>
+          <FilledButton onClick={onSaveCrate}>{crateSheetMode === 'edit' ? 'Save crate' : 'Add crate'}</FilledButton>
+          {crateSheetMode === 'edit' && (
+            <button onClick={() => onDeleteCrate(editingCrateId)} style={{ background: 'none', border: 'none', color: T.danger, fontSize: 13, cursor: 'pointer', marginTop: 14, padding: 0, width: '100%', textAlign: 'center' }}>
+              Delete crate
+            </button>
+          )}
         </Sheet>
       )}
 
@@ -2987,7 +3220,7 @@ function EventDetailScreen({ event, venueName, fmt, lines, totalCost, defaultOrd
   );
 }
 
-function StockTakeRow({ product, line, onSaveLine, onSetCaseSize }) {
+function StockTakeRow({ product, line, onSaveLine, onSetCaseSize, crateQty }) {
   const [caseQty, setCaseQty] = useState(line ? String(line.caseQty || '') : '');
   const [unitQty, setUnitQty] = useState(line ? String(line.unitQty || '') : '');
   // Only relevant while this product has no case size yet - a one-off
@@ -3025,7 +3258,10 @@ function StockTakeRow({ product, line, onSaveLine, onSetCaseSize }) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <i className={`ph ${counted ? 'ph-check-circle' : 'ph-circle-dashed'}`} style={{ color: counted ? T.accent : T.textMuted, fontSize: 16, flex: 'none' }} />
-        <div style={{ flex: 1, fontSize: 14.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{product.name}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{product.name}</div>
+          {crateQty > 0 && <div style={{ fontSize: 11, color: T.accentLight, marginTop: 1 }}>{plural(crateQty, 'unit')} already in crates — this box is for anything else</div>}
+        </div>
         <div style={{ fontSize: 11.5, color: T.textMuted, flex: 'none' }}>{product.unit}</div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -3054,8 +3290,9 @@ function StockTakeRow({ product, line, onSaveLine, onSetCaseSize }) {
 
 function StockTakeScreen({
   stockTake, venueName, categoryProgress, category, setCategory, search, setSearch,
-  uncountedOnly, setUncountedOnly, rows, onSaveLine, onSetCaseSize, loading, countedTotal, uncountedTotal,
+  uncountedOnly, setUncountedOnly, rows, onSaveLine, onSetCaseSize, crateTotalsByProduct, loading, countedTotal, uncountedTotal,
   confirming, onCancelConfirm, onConfirm, onConfirmAnyway, onAbandon, onBack,
+  section, setSection, crateRows, cratesTotalUnits, onNewCrate, onEditCrate,
 }) {
   return (
     <div>
@@ -3067,38 +3304,82 @@ function StockTakeScreen({
         <span style={{ fontSize: 11, fontWeight: 500, color: T.accentLight, background: 'rgba(145,132,217,.14)', borderRadius: 20, padding: '5px 10px', flex: 'none' }}>Stock take</span>
       </div>
       <div style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 12 }}>
-        {countedTotal} counted {'·'} {uncountedTotal} left
+        {countedTotal} counted {'·'} {uncountedTotal} left {'·'} {plural(crateRows.length, 'crate')} ({cratesTotalUnits} units)
       </div>
 
-      <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4, marginBottom: 10 }}>
-        {categoryProgress.map(c => (
-          <button key={c.cat} onClick={() => setCategory(c.cat)} style={{
-            flex: 'none', padding: '8px 12px', borderRadius: 20, whiteSpace: 'nowrap',
-            border: `1px solid ${category === c.cat ? T.accent : 'rgba(233,233,237,.14)'}`,
-            background: category === c.cat ? 'rgba(145,132,217,.12)' : 'transparent',
-            color: category === c.cat ? T.accentLight : T.textSecondary,
-            fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
-          }}>
-            {c.cat} {'·'} {c.counted}/{c.total}
-          </button>
+      <div style={{ display: 'flex', gap: 8, padding: 4, background: T.card, border: '1px solid rgba(233,233,237,.1)', borderRadius: 8, marginBottom: 14 }}>
+        {[['crates', 'Crates'], ['count', 'Count stock']].map(([key, label]) => (
+          <button key={key} onClick={() => setSection(key)} style={{
+            flex: 1, padding: '12px 4px', borderRadius: 6, border: `1px solid ${section === key ? T.accent : 'transparent'}`,
+            background: section === key ? 'rgba(145,132,217,.12)' : 'transparent',
+            color: section === key ? T.accentLight : T.textSecondary, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+          }}>{label}</button>
         ))}
       </div>
 
-      <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={'Search ' + category.toLowerCase()} style={{ ...inputStyle, marginBottom: 10 }} />
-      <div onClick={() => setUncountedOnly(v => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, cursor: 'pointer' }}>
-        <div style={{
-          width: 18, height: 18, borderRadius: 5, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          border: `1px solid ${uncountedOnly ? T.accent : 'rgba(233,233,237,.3)'}`,
-          background: uncountedOnly ? 'rgba(145,132,217,.25)' : 'transparent',
-        }}>
-          {uncountedOnly && <i className="ph ph-check" style={{ fontSize: 12, color: T.accentLight }} />}
+      {section === 'crates' && (
+        <div>
+          <div style={{ marginBottom: 14 }}>
+            <OutlineButton icon="ph-plus" onClick={onNewCrate}>Add new crate</OutlineButton>
+          </div>
+          {crateRows.length === 0 && <EmptyState title="No crates yet" body="Add one for each physical crate as you find it — tag, colour, product, quantity." />}
+          {crateRows.map(r => (
+            <div key={r.crate.id} onClick={() => onEditCrate(r.crate.id)} style={{
+              background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 12, marginBottom: 8,
+              display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+            }}>
+              <span style={{ width: 14, height: 14, borderRadius: '50%', background: r.color ? r.color.swatch : 'rgba(233,233,237,.3)', flex: 'none', border: '1px solid rgba(255,255,255,.2)' }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>{r.crate.tag}</div>
+                <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {r.product ? r.product.name : 'Removed product'}{r.color ? ' · ' + r.color.label : ''}
+                </div>
+              </div>
+              <div style={{ fontSize: 15, fontWeight: 500, color: T.accentLight, flex: 'none' }}>{r.crate.quantity}</div>
+              <i className="ph ph-caret-right" style={{ color: T.textMuted, flex: 'none' }} />
+            </div>
+          ))}
         </div>
-        <span style={{ fontSize: 13, color: T.textSecondary }}>Show uncounted only</span>
-      </div>
+      )}
 
-      {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '20px 0', textAlign: 'center' }}>{'Loading…'}</div>}
-      {!loading && rows.length === 0 && <EmptyState title="Nothing here" body="Nothing matches in this category yet." />}
-      {rows.map(r => <StockTakeRow key={r.product.id} product={r.product} line={r.line} onSaveLine={onSaveLine} onSetCaseSize={onSetCaseSize} />)}
+      {section === 'count' && (
+        <div>
+          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4, marginBottom: 10 }}>
+            {categoryProgress.map(c => (
+              <button key={c.cat} onClick={() => setCategory(c.cat)} style={{
+                flex: 'none', padding: '8px 12px', borderRadius: 20, whiteSpace: 'nowrap',
+                border: `1px solid ${category === c.cat ? T.accent : 'rgba(233,233,237,.14)'}`,
+                background: category === c.cat ? 'rgba(145,132,217,.12)' : 'transparent',
+                color: category === c.cat ? T.accentLight : T.textSecondary,
+                fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
+              }}>
+                {c.cat} {'·'} {c.counted}/{c.total}
+              </button>
+            ))}
+          </div>
+
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={'Search ' + category.toLowerCase()} style={{ ...inputStyle, marginBottom: 10 }} />
+          <div onClick={() => setUncountedOnly(v => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, cursor: 'pointer' }}>
+            <div style={{
+              width: 18, height: 18, borderRadius: 5, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: `1px solid ${uncountedOnly ? T.accent : 'rgba(233,233,237,.3)'}`,
+              background: uncountedOnly ? 'rgba(145,132,217,.25)' : 'transparent',
+            }}>
+              {uncountedOnly && <i className="ph ph-check" style={{ fontSize: 12, color: T.accentLight }} />}
+            </div>
+            <span style={{ fontSize: 13, color: T.textSecondary }}>Show uncounted only</span>
+          </div>
+
+          {loading && <div style={{ fontSize: 13, color: T.textMuted, padding: '20px 0', textAlign: 'center' }}>{'Loading…'}</div>}
+          {!loading && rows.length === 0 && <EmptyState title="Nothing here" body="Nothing matches in this category yet." />}
+          {rows.map(r => (
+            <StockTakeRow
+              key={r.product.id} product={r.product} line={r.line} onSaveLine={onSaveLine} onSetCaseSize={onSetCaseSize}
+              crateQty={crateTotalsByProduct[r.product.id] || 0}
+            />
+          ))}
+        </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
         <FilledButton onClick={onConfirm}>Confirm stock take</FilledButton>
