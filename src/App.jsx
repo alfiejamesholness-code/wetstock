@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createWorker } from 'tesseract.js';
-import { T, CATEGORIES, UNITS, CASE_SIZES, DEFAULT_SITES, STORE, MONTHS, plural, fmt, monthKey, stockAt } from './constants';
+import { T, CATEGORIES, UNITS, CASE_SIZES, DEFAULT_SITES, STORE, MONTHS, EVENT_TYPES, WEATHER_OPTIONS, DRINK_SLOT_SUGGESTIONS, plural, fmt, monthKey, stockAt } from './constants';
+import { planLineForProduct } from './orderCalculator';
 import { Toast, EmptyState, OutlineButton, FilledButton, SegmentedTabs, FieldLabel, inputStyle, ErrorText } from './components/Primitives';
 import { Header, Banner, TabBar } from './components/Chrome';
 import { Sheet } from './components/Sheet';
@@ -23,6 +24,13 @@ function productFromRow(row) {
     // null/empty = carried at every site (backward compatible default);
     // otherwise an array of site ids this product is actually in range for.
     sites: (row.sites && row.sites.length) ? row.sites : null,
+    // Order-planning fields — how much this product's container holds,
+    // the default pour size, and what a case costs. All optional: a
+    // product without these just can't be used in a drink line's order
+    // calculation yet.
+    containerMl: row.container_ml || null,
+    servingMl: row.serving_ml || null,
+    costPerCase: row.cost_per_case || null,
   };
 }
 
@@ -42,6 +50,35 @@ function sessionFromRow(row) {
     back: row.back || {},
     backCases: row.back_cases || {},
     completedAt: row.completed_at,
+  };
+}
+
+function eventFromRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    venue: row.venue,
+    eventType: row.event_type,
+    eventDate: row.event_date,
+    guests: row.guests,
+    weather: row.weather,
+    status: row.status,
+    notes: row.notes,
+    sessionId: row.session_id,
+  };
+}
+
+function drinkLineFromRow(row) {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    slot: row.slot,
+    productId: row.product_id,
+    recipeId: row.recipe_id,
+    servings: row.servings,
+    servingMl: row.serving_ml,
+    bufferPct: row.buffer_pct,
+    notes: row.notes,
   };
 }
 
@@ -149,6 +186,11 @@ export default function App() {
   const [activityError, setActivityError] = useState('');
   const [uniformItems, setUniformItems] = useState([]);
   const [uniformMove, setUniformMove] = useState(null); // { itemId, dir: 'out' | 'in' }
+  const [events, setEvents] = useState([]);
+  const [drinkLines, setDrinkLines] = useState([]);
+  const [defaultOrderBuffer, setDefaultOrderBuffer] = useState(0.10);
+  const [activeEventId, setActiveEventId] = useState(null);
+  const [newLineProductId, setNewLineProductId] = useState('');
 
   // Products and sessions load from and save to Supabase. Everything else
   // (sites, deliveries, transfers, recounts, stock levels) is still
@@ -195,6 +237,43 @@ export default function App() {
     reloadUniform();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, view]);
+
+  // Order planning: events + their drink lines, plus the global default
+  // buffer they're calculated against (overridable per line).
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    async function load() {
+      const { data, error } = await supabase.from('events').select('*').order('event_date', { ascending: true });
+      if (cancelled) return;
+      if (error) { toast("Couldn't load events: " + error.message); return; }
+      setEvents((data || []).map(eventFromRow));
+    }
+    load();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    async function load() {
+      const { data, error } = await supabase.from('drink_lines').select('*').order('sort');
+      if (cancelled) return;
+      if (error) { toast("Couldn't load drink lines: " + error.message); return; }
+      setDrinkLines((data || []).map(drinkLineFromRow));
+    }
+    load();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    supabase.from('settings').select('default_order_buffer').single().then(({ data, error }) => {
+      if (!error && data && data.default_order_buffer != null) setDefaultOrderBuffer(Number(data.default_order_buffer));
+    });
+  }, [session]);
 
   async function reloadUniform() {
     const { data, error } = await supabase.from('uniform_items').select('*').order('sort');
@@ -282,6 +361,9 @@ export default function App() {
   const caseAmountRef = useRef(null);
   const caseSizeRef = useRef(null);
   const parRef = useRef(null);
+  const containerMlRef = useRef(null);
+  const servingMlRef = useRef(null);
+  const costPerCaseRef = useRef(null);
   const codeRef = useRef(null);
   const siteRef = useRef(null);
   const emailRef = useRef(null);
@@ -290,6 +372,17 @@ export default function App() {
   const uniformQtyRef = useRef(null);
   const uniformAddNameRef = useRef(null);
   const uniformAddQtyRef = useRef(null);
+  const eventNameRef = useRef(null);
+  const eventTypeRef = useRef(null);
+  const eventDateRef = useRef(null);
+  const eventGuestsRef = useRef(null);
+  const eventWeatherRef = useRef(null);
+  const eventNotesRef = useRef(null);
+  const lineSlotRef = useRef(null);
+  const lineServingsRef = useRef(null);
+  const lineServingMlRef = useRef(null);
+  const lineBufferRef = useRef(null);
+  const lineNotesRef = useRef(null);
   const recountInput = useRef({});
   const toastTimer = useRef(null);
   const scanTimer = useRef(null);
@@ -748,6 +841,31 @@ export default function App() {
   const detail = sheet === 'deliveryDetail' ? deliveries.find(d => d.id === detailId) : null;
   const editingProduct = sheet === 'product' && editingId ? products.find(p => p.id === editingId) : null;
 
+  // ---- order planning derived values ----
+  const activeEventForLine = sheet === 'drinkLine' ? events.find(x => x.id === activeEventId) : null;
+  const selectedLineProduct = newLineProductId ? products.find(p => p.id === newLineProductId) : null;
+  const eventDetail = view === 'eventDetail' ? events.find(x => x.id === activeEventId) : null;
+  // Each drink line's live order calculation — recomputed from current
+  // stock every render, so it's always up to date, not a stored snapshot.
+  const eventLinesPlanned = eventDetail
+    ? drinkLines.filter(dl => dl.eventId === eventDetail.id).map(dl => {
+        const product = products.find(p => p.id === dl.productId);
+        const servingMl = dl.servingMl || (product && product.servingMl);
+        if (!product || !product.containerMl || !servingMl) {
+          return { line: dl, product: product || null, plan: null, missing: true };
+        }
+        const availableUnits = totalStock(product, eventDetail.venue);
+        const plan = planLineForProduct({
+          servings: dl.servings, servingMl, containerMl: product.containerMl,
+          bufferPct: dl.bufferPct != null ? dl.bufferPct : defaultOrderBuffer,
+          availableUnits, caseSize: product.caseSize, costPerCase: product.costPerCase,
+        });
+        return { line: dl, product, plan, missing: false };
+      })
+    : [];
+  const eventOrderTotalCost = eventLinesPlanned.reduce((sum, r) => sum + (r.plan ? r.plan.cost : 0), 0);
+  const sortedEvents = events.slice().sort((a, b) => (a.eventDate || '9999').localeCompare(b.eventDate || '9999'));
+
   useEffect(() => {
     if (editingProduct && nameRef.current && !filledFlag.current) {
       nameRef.current.value = editingProduct.name;
@@ -758,6 +876,9 @@ export default function App() {
       if (unitRef.current) unitRef.current.value = editingProduct.unit;
       if (caseSizeRef.current) caseSizeRef.current.value = editingProduct.caseSize || '';
       if (parRef.current) parRef.current.value = editingProduct.parLevel || '';
+      if (containerMlRef.current) containerMlRef.current.value = editingProduct.containerMl || '';
+      if (servingMlRef.current) servingMlRef.current.value = editingProduct.servingMl || '';
+      if (costPerCaseRef.current) costPerCaseRef.current.value = editingProduct.costPerCase || '';
     }
   }, [editingProduct]);
 
@@ -766,11 +887,11 @@ export default function App() {
   const tabOn = (key) => effectiveView === key
     || (key === 'sessions' && effectiveView === 'sessionDetail')
     || (key === 'stock' && (effectiveView === 'recount' || effectiveView === 'siteStock'))
-    || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity' || effectiveView === 'uniform'))
-    || (effectiveView === 'count' && ((key === 'transfers' && c && c.mode === 'transfer') || (key === 'deliveries' && c && c.mode === 'delivery') || (key === 'sessions' && c && (c.mode === 'out' || c.mode === 'back'))));
+    || (key === 'more' && (effectiveView === 'products' || effectiveView === 'activity' || effectiveView === 'uniform' || effectiveView === 'ordering' || effectiveView === 'eventDetail' || effectiveView === 'deliveries'))
+    || (effectiveView === 'count' && ((key === 'transfers' && c && c.mode === 'transfer') || (key === 'more' && c && c.mode === 'delivery') || (key === 'sessions' && c && (c.mode === 'out' || c.mode === 'back'))));
   const tabs = [
     ['stock', 'Stock', 'ph-stack'], ['sessions', 'Sessions', 'ph-clipboard-text'],
-    ['transfers', 'Transfers', 'ph-arrows-left-right'], ['deliveries', 'Goods in', 'ph-truck'],
+    ['transfers', 'Transfers', 'ph-arrows-left-right'],
     ['history', 'History', 'ph-clock-counter-clockwise'], ['more', 'More', 'ph-dots-three-circle'],
   ].map(([key, label, icon]) => ({ label, icon, tone: tabOn(key) ? T.accent : T.textMuted, go: () => go(key) }));
   // Staff get a read-only look at stock (so they can plan ahead of a
@@ -898,11 +1019,19 @@ export default function App() {
     const owner = productOwner === 'fcg' ? 'fcg' : 'house';
     const caseSizeRaw = caseSizeRef.current ? caseSizeRef.current.value : '';
     const caseSize = caseSizeRaw ? Number(caseSizeRaw) : null;
+    const containerMlRaw = containerMlRef.current ? containerMlRef.current.value.trim() : '';
+    const servingMlRaw = servingMlRef.current ? servingMlRef.current.value.trim() : '';
+    const costPerCaseRaw = costPerCaseRef.current ? costPerCaseRef.current.value.trim() : '';
     // Storing null when every current site is picked (rather than the
     // literal list) means a site added later still carries this product,
     // matching how it behaved before this field existed.
     const sitesToSave = productSites.length >= sites.length ? null : productSites;
-    const row = { name, category: cat, unit, owner, par_level: par, case_size: caseSize, sites: sitesToSave };
+    const row = {
+      name, category: cat, unit, owner, par_level: par, case_size: caseSize, sites: sitesToSave,
+      container_ml: containerMlRaw ? Number(containerMlRaw) : null,
+      serving_ml: servingMlRaw ? Number(servingMlRaw) : null,
+      cost_per_case: costPerCaseRaw ? Number(costPerCaseRaw) : null,
+    };
 
     if (editingProduct) {
       const { data, error } = await supabase.from('products').update(row).eq('id', editingProduct.id).select().single();
@@ -948,6 +1077,76 @@ export default function App() {
       created_by: session ? session.user.id : null,
     }).then(({ error }) => { if (error) toast("Couldn't save session: " + error.message); });
   }
+  async function onCreateEvent() {
+    const name = eventNameRef.current ? eventNameRef.current.value.trim() : '';
+    if (!name) { setSheetError('Name the event.'); return; }
+    const venue = (draft && draft.venue) || sv || 'lc';
+    const eventType = eventTypeRef.current ? eventTypeRef.current.value : EVENT_TYPES[0];
+    const eventDate = eventDateRef.current ? eventDateRef.current.value : null;
+    const guestsRaw = eventGuestsRef.current ? eventGuestsRef.current.value.trim() : '';
+    const guests = guestsRaw ? Math.max(0, Math.round(Number(guestsRaw) || 0)) : null;
+    const weather = eventWeatherRef.current ? eventWeatherRef.current.value : null;
+    const notes = eventNotesRef.current ? eventNotesRef.current.value.trim() : '';
+    const row = {
+      name, venue, event_type: eventType, event_date: eventDate || null, guests, weather: weather || null,
+      notes: notes || null, status: 'planning', created_by: session ? session.user.id : null,
+    };
+    const { data, error } = await supabase.from('events').insert(row).select().single();
+    if (error) { setSheetError('Could not save: ' + error.message); return; }
+    const created = eventFromRow(data);
+    setEvents(e => [...e, created]);
+    setSheet(null); setDraft(null); setSheetError('');
+    setActiveEventId(created.id); setView('eventDetail');
+    toast('Event added');
+    logActivity('Added event', name + ' — ' + venueName(venue));
+  }
+
+  async function deleteEvent(id) {
+    const target = events.find(x => x.id === id);
+    const { error } = await supabase.from('events').delete().eq('id', id);
+    if (error) { toast("Couldn't delete: " + error.message); return; }
+    setEvents(e => e.filter(x => x.id !== id));
+    setDrinkLines(dl => dl.filter(x => x.eventId !== id));
+    setSheet(null); setView('ordering');
+    toast('Event deleted');
+    logActivity('Deleted event', target ? target.name : null);
+  }
+
+  function onOpenNewDrinkLine(eventId) {
+    setActiveEventId(eventId); setNewLineProductId('');
+    openSheet('drinkLine'); setSheetError('');
+  }
+
+  async function onSaveDrinkLine() {
+    const slot = lineSlotRef.current ? lineSlotRef.current.value.trim() : '';
+    if (!slot) { setSheetError('Say which part of the event this is for (e.g. Welcome drink).'); return; }
+    if (!newLineProductId) { setSheetError('Pick a product.'); return; }
+    const servingsRaw = lineServingsRef.current ? lineServingsRef.current.value.trim() : '';
+    const servings = Math.max(0, Number(servingsRaw) || 0);
+    if (!servings) { setSheetError('How many servings?'); return; }
+    const product = products.find(p => p.id === newLineProductId);
+    const servingMlRaw = lineServingMlRef.current ? lineServingMlRef.current.value.trim() : '';
+    const servingMl = servingMlRaw ? Number(servingMlRaw) : (product ? product.servingMl : null);
+    const bufferRaw = lineBufferRef.current ? lineBufferRef.current.value.trim() : '';
+    const bufferPct = bufferRaw ? Number(bufferRaw) / 100 : null;
+    const notes = lineNotesRef.current ? lineNotesRef.current.value.trim() : '';
+    const row = {
+      event_id: activeEventId, slot, product_id: newLineProductId,
+      servings, serving_ml: servingMl || null, buffer_pct: bufferPct, notes: notes || null,
+    };
+    const { data, error } = await supabase.from('drink_lines').insert(row).select().single();
+    if (error) { setSheetError('Could not save: ' + error.message); return; }
+    setDrinkLines(dl => [...dl, drinkLineFromRow(data)]);
+    setSheet(null); setSheetError('');
+    toast('Drink line added');
+  }
+
+  async function deleteDrinkLine(id) {
+    const { error } = await supabase.from('drink_lines').delete().eq('id', id);
+    if (error) { toast("Couldn't delete: " + error.message); return; }
+    setDrinkLines(dl => dl.filter(x => x.id !== id));
+  }
+
   function onAutoReadLabelClick(e) {
     // The label's native click opens the camera directly, which iOS Safari
     // requires (a JS-triggered .click() on a hidden input is unreliable
@@ -1113,6 +1312,7 @@ export default function App() {
             noDeliveries={deliveries.length === 0}
             onNewDelivery={() => openSheet('delivery', { draft: { venue: 'lc' }, photoTaken: false })}
             onOpen={(id) => openSheet('deliveryDetail', { detailId: id })}
+            onBack={() => go('more')}
           />
         )}
         {effectiveView === 'history' && <HistoryScreen items={historyItems} onToggle={(id) => setOpenHistory(o => ({ ...o, [id]: !o[id] }))} />}
@@ -1142,6 +1342,9 @@ export default function App() {
             onGoProducts={() => go('products')}
             onGoActivity={() => go('activity')}
             onGoUniform={() => go('uniform')}
+            onGoOrdering={() => go('ordering')}
+            onGoDeliveries={() => go('deliveries')}
+            deliveryCountLabel={deliveries.length + ' ' + (deliveries.length === 1 ? 'delivery' : 'deliveries') + ' logged'}
             sites={sites} STORE={STORE}
             onRemoveSite={(id) => setSites(s => s.filter(x => x.id !== id))}
             siteRef={siteRef} onAddSite={onAddSite}
@@ -1162,6 +1365,25 @@ export default function App() {
             onMove={(itemId, dir) => { setUniformMove({ itemId, dir }); openSheet('uniformMove'); }}
             onManage={() => openSheet('uniformManage')}
             onBack={() => go('more')}
+          />
+        )}
+        {effectiveView === 'ordering' && (
+          <OrderingScreen
+            events={sortedEvents} venueName={venueName} fmt={fmt}
+            onOpen={(id) => { setActiveEventId(id); setView('eventDetail'); }}
+            onNewEvent={() => { setDraft({ venue: sv || 'lc' }); openSheet('event'); }}
+            onBack={() => go('more')}
+          />
+        )}
+        {effectiveView === 'eventDetail' && eventDetail && (
+          <EventDetailScreen
+            event={eventDetail} venueName={venueName} fmt={fmt}
+            lines={eventLinesPlanned} totalCost={eventOrderTotalCost}
+            defaultOrderBuffer={defaultOrderBuffer}
+            onBack={() => go('ordering')}
+            onAddLine={() => onOpenNewDrinkLine(eventDetail.id)}
+            onDeleteLine={deleteDrinkLine}
+            onDelete={() => { setConfirmKind('event'); setConfirmId(eventDetail.id); openSheet('confirm'); }}
           />
         )}
       </div>
@@ -1342,8 +1564,115 @@ export default function App() {
           )}
           <FieldLabel>Par level</FieldLabel>
           <input ref={parRef} type="number" placeholder="Optional" style={{ ...inputStyle, marginBottom: 16 }} />
+          <div style={{ fontSize: 12, fontWeight: 500, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>
+            Order planning {'\u2014'} optional
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 6 }}>
+            <div>
+              <FieldLabel>Container size (ml)</FieldLabel>
+              <input ref={containerMlRef} type="number" inputMode="decimal" placeholder="e.g. 750" style={inputStyle} />
+            </div>
+            <div>
+              <FieldLabel>Default serving (ml)</FieldLabel>
+              <input ref={servingMlRef} type="number" inputMode="decimal" placeholder="e.g. 125" style={inputStyle} />
+            </div>
+          </div>
+          <FieldLabel>Cost per case ({'\u00a3'})</FieldLabel>
+          <input ref={costPerCaseRef} type="number" inputMode="decimal" placeholder="Optional" style={{ ...inputStyle, marginBottom: 6 }} />
+          <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 16, lineHeight: 1.5 }}>
+            Fill these in to use this product in Ordering \u2014 they're how servings get turned into cases to order.
+          </div>
           <ErrorText>{sheetError}</ErrorText>
           <FilledButton onClick={onSaveProduct}>{editingProduct ? 'Save changes' : 'Add product'}</FilledButton>
+        </Sheet>
+      )}
+
+      {sheet === 'event' && (
+        <Sheet title="New event" onClose={closeSheet} onBackdrop={closeSheet}>
+          <FieldLabel>Event name</FieldLabel>
+          <input ref={eventNameRef} placeholder={'Wedding \u2014 The Barn'} style={{ ...inputStyle, marginBottom: 14 }} autoFocus />
+          <FieldLabel>Venue</FieldLabel>
+          <div style={{ marginBottom: 14 }}>
+            <SegmentedTabs options={sites.map(v => ({
+              name: v.name, pick: () => setDraft(d => ({ ...(d || {}), venue: v.id })),
+              edge: (draft && draft.venue) === v.id ? T.accent : 'transparent',
+              bg: (draft && draft.venue) === v.id ? 'rgba(145,132,217,.12)' : 'transparent',
+              tone: (draft && draft.venue) === v.id ? T.accentLight : T.textSecondary,
+            }))} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+            <div>
+              <FieldLabel>Event type</FieldLabel>
+              <select ref={eventTypeRef} defaultValue={EVENT_TYPES[0]} style={inputStyle}>
+                {EVENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <FieldLabel>Weather</FieldLabel>
+              <select ref={eventWeatherRef} defaultValue="" style={inputStyle}>
+                <option value="">{'\u2014'}</option>
+                {WEATHER_OPTIONS.map(w => <option key={w} value={w}>{w}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+            <div>
+              <FieldLabel>Date</FieldLabel>
+              <input ref={eventDateRef} type="date" style={inputStyle} />
+            </div>
+            <div>
+              <FieldLabel>Guests</FieldLabel>
+              <input ref={eventGuestsRef} type="number" inputMode="numeric" placeholder="e.g. 100" style={inputStyle} />
+            </div>
+          </div>
+          <FieldLabel>Notes</FieldLabel>
+          <textarea ref={eventNotesRef} rows={3} placeholder="Optional" style={{ ...inputStyle, marginBottom: 14, resize: 'vertical', fontFamily: 'inherit' }} />
+          <ErrorText>{sheetError}</ErrorText>
+          <FilledButton onClick={onCreateEvent}>Add event</FilledButton>
+        </Sheet>
+      )}
+
+      {sheet === 'drinkLine' && (
+        <Sheet title="Add drink line" onClose={closeSheet} onBackdrop={closeSheet}>
+          <FieldLabel>Slot</FieldLabel>
+          <input ref={lineSlotRef} list="drink-slot-suggestions" placeholder="e.g. Welcome drink" style={{ ...inputStyle, marginBottom: 6 }} autoFocus />
+          <datalist id="drink-slot-suggestions">
+            {DRINK_SLOT_SUGGESTIONS.map(s => <option key={s} value={s} />)}
+          </datalist>
+          <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 14, lineHeight: 1.5 }}>
+            Type your own, or pick a suggestion \u2014 not locked to a fixed list.
+          </div>
+          <FieldLabel>Product</FieldLabel>
+          <select
+            value={newLineProductId}
+            onChange={(e) => setNewLineProductId(e.target.value)}
+            style={{ ...inputStyle, marginBottom: 6 }}
+          >
+            <option value="">Choose a product\u2026</option>
+            {products
+              .filter(p => !activeEventForLine || productAppliesTo(p, activeEventForLine.venue))
+              .slice().sort((a, b) => a.name.localeCompare(b.name))
+              .map(p => <option key={p.id} value={p.id}>{p.name}{(!p.containerMl || !p.servingMl) ? ' (needs serving info)' : ''}</option>)}
+          </select>
+          <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 14, lineHeight: 1.5 }}>
+            Products marked "needs serving info" don't have a container/serving size set yet \u2014 add it via Edit on the product first, or the order for this line can't be calculated.
+          </div>
+          <FieldLabel>Servings</FieldLabel>
+          <input ref={lineServingsRef} type="number" inputMode="numeric" placeholder="e.g. 100" style={{ ...inputStyle, marginBottom: 14 }} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+            <div>
+              <FieldLabel>Serving size override (ml)</FieldLabel>
+              <input ref={lineServingMlRef} type="number" inputMode="decimal" placeholder={selectedLineProduct && selectedLineProduct.servingMl ? String(selectedLineProduct.servingMl) : 'Uses product default'} style={inputStyle} />
+            </div>
+            <div>
+              <FieldLabel>{'Buffer override (%)'}</FieldLabel>
+              <input ref={lineBufferRef} type="number" inputMode="decimal" placeholder={(defaultOrderBuffer * 100) + '% default'} style={inputStyle} />
+            </div>
+          </div>
+          <FieldLabel>Notes</FieldLabel>
+          <textarea ref={lineNotesRef} rows={2} placeholder="Optional" style={{ ...inputStyle, marginBottom: 14, resize: 'vertical', fontFamily: 'inherit' }} />
+          <ErrorText>{sheetError}</ErrorText>
+          <FilledButton onClick={onSaveDrinkLine}>Add drink line</FilledButton>
         </Sheet>
       )}
 
@@ -1360,6 +1689,19 @@ export default function App() {
                   onClick={() => deleteProduct(confirmId)}
                   style={{ flex: 1, padding: 14, borderRadius: 8, border: 'none', background: T.danger, color: '#fff', fontWeight: 500, cursor: 'pointer' }}
                 >Delete product</button>
+              </div>
+            </>
+          ) : confirmKind === 'event' ? (
+            <>
+              <div style={{ fontSize: 14, lineHeight: 1.55, color: T.textSecondary, marginBottom: 18 }}>
+                Delete "{(events.find(x => x.id === confirmId) || {}).name || 'this event'}"? Its drink lines are removed too \u2014 it can't be undone.
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={closeSheet} style={{ flex: 1, padding: 14, borderRadius: 8, border: '1px solid rgba(233,233,237,.16)', background: 'transparent', color: T.text, cursor: 'pointer' }}>Back</button>
+                <button
+                  onClick={() => deleteEvent(confirmId)}
+                  style={{ flex: 1, padding: 14, borderRadius: 8, border: 'none', background: T.danger, color: '#fff', fontWeight: 500, cursor: 'pointer' }}
+                >Delete event</button>
               </div>
             </>
           ) : (
@@ -1918,10 +2260,13 @@ function RecountScreen({ sites, recount, pickVenue, rows, recountInput, onSave, 
   );
 }
 
-function DeliveriesScreen({ deliveries, venueName, fmt, noDeliveries, onNewDelivery, onOpen }) {
+function DeliveriesScreen({ deliveries, venueName, fmt, noDeliveries, onNewDelivery, onOpen, onBack }) {
   return (
     <div>
-      <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 14 }}>Back of house</div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
+        <i className="ph ph-arrow-left" /> More
+      </button>
+      <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 14 }}>Goods in</div>
       <div style={{ marginBottom: 14 }}>
         <OutlineButton icon="ph-plus" onClick={onNewDelivery}>Log delivery</OutlineButton>
       </div>
@@ -2099,7 +2444,7 @@ function TransfersScreen({ transferMonth, transferSummaries, onSummaryClick, fil
   );
 }
 
-function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, onGoUniform, sites, STORE, onRemoveSite, siteRef, onAddSite, summaryOn, onToggleSummary, recipients, onRemoveRecipient, emailRef, onAddRecipient }) {
+function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, onGoUniform, onGoOrdering, onGoDeliveries, deliveryCountLabel, sites, STORE, onRemoveSite, siteRef, onAddSite, summaryOn, onToggleSummary, recipients, onRemoveRecipient, emailRef, onAddRecipient }) {
   return (
     <div>
       <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 16 }}>More</div>
@@ -2112,6 +2457,18 @@ function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, onGoUniform
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 15, fontWeight: 500 }}>Product range</div>
           <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>{productCountLabel}</div>
+        </div>
+        <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
+      </div>
+
+      <div onClick={onGoDeliveries} style={{
+        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 8,
+        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+      }}>
+        <i className="ph ph-truck" style={{ fontSize: 20, color: T.accent }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 500 }}>Goods in</div>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>{deliveryCountLabel}</div>
         </div>
         <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
       </div>
@@ -2129,13 +2486,25 @@ function MoreScreen({ productCountLabel, onGoProducts, onGoActivity, onGoUniform
       </div>
 
       <div onClick={onGoUniform} style={{
-        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 20,
+        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 8,
         display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
       }}>
         <i className="ph ph-t-shirt" style={{ fontSize: 20, color: T.accent }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 15, fontWeight: 500 }}>Uniform</div>
           <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>Shirts and aprons, in and out</div>
+        </div>
+        <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
+      </div>
+
+      <div onClick={onGoOrdering} style={{
+        background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 20,
+        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+      }}>
+        <i className="ph ph-calculator" style={{ fontSize: 20, color: T.accent }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 500 }}>Ordering</div>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>Plan events and work out what to order</div>
         </div>
         <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
       </div>
@@ -2308,6 +2677,129 @@ function UniformScreen({ rows, onMove, onManage, onBack }) {
           >Take</button>
         </div>
       ))}
+    </div>
+  );
+}
+
+function OrderingScreen({ events, venueName, fmt, onOpen, onNewEvent, onBack }) {
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
+        <i className="ph ph-arrow-left" /> More
+      </button>
+      <div style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-.02em', marginBottom: 4 }}>Ordering</div>
+      <div style={{ fontSize: 14, color: T.textSecondary, marginBottom: 16 }}>Plan an event's drinks and work out what to order.</div>
+      <div style={{ marginBottom: 14 }}>
+        <OutlineButton icon="ph-plus" onClick={onNewEvent}>New event</OutlineButton>
+      </div>
+      {events.length === 0 && <EmptyState title="No events yet" body="Add one to start planning what it needs." />}
+      {events.map(x => (
+        <div key={x.id} onClick={() => onOpen(x.id)} style={{
+          background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 14, marginBottom: 8,
+          display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 16, fontWeight: 500 }}>{x.name}</div>
+            <div style={{ fontSize: 12, color: T.textMuted, marginTop: 3 }}>
+              {venueName(x.venue)} {'·'} {x.eventDate ? fmt(x.eventDate) : 'No date yet'}{x.guests ? ' · ' + plural(x.guests, 'guest') : ''}
+            </div>
+          </div>
+          <span style={{ fontSize: 11, fontWeight: 500, color: T.accentLight, background: 'rgba(145,132,217,.14)', borderRadius: 20, padding: '5px 10px' }}>
+            {x.eventType}
+          </span>
+          <i className="ph ph-caret-right" style={{ color: T.textMuted }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EventDetailScreen({ event, venueName, fmt, lines, totalCost, defaultOrderBuffer, onBack, onAddLine, onDeleteLine, onDelete }) {
+  const bySlot = {};
+  lines.forEach(r => { (bySlot[r.line.slot] = bySlot[r.line.slot] || []).push(r); });
+  const slots = Object.keys(bySlot);
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.textSecondary, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginBottom: 14, padding: 0 }}>
+        <i className="ph ph-arrow-left" /> Ordering
+      </button>
+      <div style={{ background: 'linear-gradient(160deg,#2b2741,#1e2130)', border: `1px solid ${T.accent}`, borderRadius: 10, padding: 18, marginBottom: 16 }}>
+        <div style={{ fontSize: 19, fontWeight: 500 }}>{event.name}</div>
+        <div style={{ fontSize: 12.5, color: T.textMuted, marginTop: 4 }}>
+          {venueName(event.venue)} {'·'} {event.eventType}{event.eventDate ? ' · ' + fmt(event.eventDate) : ''}
+        </div>
+        <div style={{ fontSize: 12.5, color: T.textMuted, marginTop: 2 }}>
+          {event.guests ? plural(event.guests, 'guest') : 'Guest count not set'}{event.weather ? ' · ' + event.weather : ''}
+        </div>
+        {event.notes && <div style={{ fontSize: 13, color: T.textSecondary, marginTop: 10, lineHeight: 1.5 }}>{event.notes}</div>}
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <OutlineButton icon="ph-plus" onClick={onAddLine}>Add drink line</OutlineButton>
+      </div>
+
+      {slots.length === 0 && <EmptyState title="No drink lines yet" body="Add one for each part of the event — welcome drink, toast, evening bar, or whatever this event needs." />}
+
+      {slots.map(slot => (
+        <div key={slot} style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 500, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>{slot}</div>
+          {bySlot[slot].map(r => (
+            <div key={r.line.id} style={{ background: T.card, border: '1px solid rgba(233,233,237,.09)', borderRadius: 8, padding: 13, marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14.5, fontWeight: 500 }}>{r.product ? r.product.name : 'Removed product'}</div>
+                  <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>
+                    {plural(r.line.servings, 'serving')}{(r.line.servingMl || (r.product && r.product.servingMl)) ? ' × ' + (r.line.servingMl || r.product.servingMl) + 'ml' : ''}
+                  </div>
+                </div>
+                <button onClick={() => onDeleteLine(r.line.id)} style={{ background: 'none', border: 'none', color: T.textMuted, cursor: 'pointer', fontSize: 16, flex: 'none' }}>
+                  <i className="ph ph-trash" />
+                </button>
+              </div>
+              {r.missing ? (
+                <div style={{ fontSize: 12, color: T.warn, marginTop: 8, lineHeight: 1.5 }}>
+                  {r.product ? 'This product needs a container size and serving size set (Edit product) before an order can be calculated.' : "This product was removed — can't calculate an order."}
+                </div>
+              ) : (
+                <div style={{ borderTop: '1px solid rgba(233,233,237,.08)', marginTop: 10, paddingTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 10.5, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.04em' }}>Needed</div>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>{r.plan.unitsNeeded}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10.5, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.04em' }}>Have</div>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>{r.plan.availableUnits}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10.5, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '.04em' }}>To order</div>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: r.plan.cases > 0 ? T.accentLight : T.text }}>
+                      {r.product.caseSize ? plural(r.plan.cases, 'case') : r.plan.shortfallUnits + ' units'}
+                    </div>
+                  </div>
+                  {r.plan.cost > 0 && (
+                    <div style={{ gridColumn: '1 / -1', fontSize: 12, color: T.textSecondary, marginTop: 2 }}>
+                      {'£' + r.plan.cost.toFixed(2)} for the new cases needed
+                      {r.line.bufferPct != null ? ` · ${Math.round(r.line.bufferPct * 100)}% buffer` : ` · ${Math.round(defaultOrderBuffer * 100)}% default buffer`}
+                    </div>
+                  )}
+                </div>
+              )}
+              {r.line.notes && <div style={{ fontSize: 12, color: T.textMuted, marginTop: 8, lineHeight: 1.5 }}>{r.line.notes}</div>}
+            </div>
+          ))}
+        </div>
+      ))}
+
+      {totalCost > 0 && (
+        <div style={{ background: 'rgba(145,132,217,.08)', border: `1px solid rgba(145,132,217,.35)`, borderRadius: 8, padding: 14, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 13.5, color: T.textSecondary }}>Total to order this event</span>
+          <span style={{ fontSize: 17, fontWeight: 500, color: T.accentLight }}>{'£' + totalCost.toFixed(2)}</span>
+        </div>
+      )}
+
+      <button onClick={onDelete} style={{ background: 'none', border: 'none', color: T.textMuted, fontSize: 13, cursor: 'pointer', marginTop: 4, padding: 0 }}>
+        Delete event
+      </button>
     </div>
   );
 }

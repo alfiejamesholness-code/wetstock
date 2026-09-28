@@ -19,6 +19,11 @@ export const T = {
 export const CATEGORIES = ['Beer', 'Cider', 'Wine', 'Spirits', 'Soft Drinks', 'Other'];
 export const UNITS = ['Keg', 'Bottle', 'Can', 'Bag-in-box', 'Other'];
 export const CASE_SIZES = [6, 8, 12, 18, 24];
+export const EVENT_TYPES = ['Wedding', 'Corporate', 'Private party', 'Festival', 'Other'];
+export const WEATHER_OPTIONS = ['Sunny', 'Mixed', 'Wet', 'Cold', 'Other'];
+// Suggestions only — slot is free text, since events come from your own
+// description or an uploaded spec rather than a fixed form.
+export const DRINK_SLOT_SUGGESTIONS = ['Welcome drink', 'Toast', 'Evening bar'];
 export const DEFAULT_SITES = [
   { id: 'lc', name: 'Louis Container' },
   { id: 'kc', name: 'Kingscote' },
