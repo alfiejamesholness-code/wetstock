@@ -1,0 +1,162 @@
+product_id,name,category,unit,case_size,loose_units_at_lc,sealed_cases_at_lc
+d3dc7a17-1f5d-4ee6-890c-46842308bc66,Asahi 0%,Beer,Bottle,,0,0
+672066ed-4fcd-4396-8aa8-925e08f752e5,Butcombe gold,Beer,Bottle,8,0,1
+c25c0cdc-bb31-48c1-ae7a-b85114d802ab,Corona,Beer,Bottle,,12,0
+33a32d86-da4a-443b-8b8e-f92fca409369,Gem,Beer,Bottle,8,10,0
+6659e6c0-9f27-463c-a04e-f8d96cab485a,Guinness,Beer,Can,24,2,1
+ad3017c7-ee68-4725-b979-303367f633db,Guinness 0%,Beer,Can,24,52,1
+c66934af-42fe-4856-a785-db83e657714c,Heineken 0%,Beer,Bottle,24,58,1
+ab28372f-862b-4583-84e2-9b0115bfc6b7,London Pride,Beer,Bottle,24,2,0
+55481b5a-f807-4294-865c-af37e5f64a91,Neck Oil,Beer,Bottle,12,0,1
+28ec7e41-85de-4f29-928a-292078c0e59b,Peroni 0%,Beer,Bottle,24,13,0
+4f9c3e4c-91d7-4ec9-b1e1-55ecca6e0788,Peroni GF,Beer,Bottle,24,0,2
+acd5e2bb-8a34-4c70-8e27-31541754bfb2,Haze,Cider,Bottle,6,14,2
+67ae5400-95d4-4ea1-92ba-a03178959dd1,Henry Weston's vintage cider,Cider,Bottle,6,8,1
+72aa945c-cc7e-4f01-ab87-574d3a283f9d,Henry Weston's vintage pear,Cider,Bottle,6,0,1
+497e2094-a56e-4545-8b23-d3e9df438d7a,Rattler,Cider,Bottle,8,0,0
+150202b9-e8d5-4abf-b857-9661f121b92e,Stowford Press,Cider,Bottle,8,0,1
+788712ea-b213-4f07-81a4-9cb2bd7f003a,Thatchers gold,Cider,Can,6,24,0
+ff744736-0013-44de-ab13-810915b1ba6c,Wiltshire gold,Cider,Bottle,8,3,1
+745e3953-9fd4-4d7d-8f58-1e7bfac0baf0,African Ridge Chenin Blanc,Wine,Bottle,,3,0
+58c1c93d-2edf-4de0-83f5-d1a44af7d3a7,Altaria Sauvignon Blanc,Wine,Bottle,,1,0
+57825311-d130-440f-8d6a-a8ba70867a52,Bella Modella,Wine,Bottle,6,25,0
+45b3899e-68ed-4c25-a617-d8e028b0667f,Bella Modella rose,Wine,Bottle,6,34,0
+128ab3ab-55e2-4e49-aceb-e1a9ae045001,Campo Flores,Wine,Bottle,,9,0
+bd68b586-bbf3-4540-b76b-dddee5d9d10e,Cantu Estate Gavi,Wine,Bottle,,2,0
+f1dd1e11-fa9a-4805-9dde-e127371ef063,Cape Heights Chardonnay,Wine,Bottle,,1,0
+4e3d4c04-d281-4dcc-b32b-67402fa8ad69,Combe Rough Picpoul,Wine,Bottle,,3,0
+c607a09f-515f-4a89-be45-1725f97e10d3,Duc de Morny Picpoul,Wine,Bottle,,6,0
+58351955-1e47-42b8-8226-77fac34475d9,Finca Manzanos,Wine,Bottle,,36,0
+7342ca75-d6d9-47a9-8cbc-700cc8f0fbe4,Gusbourne,Wine,Bottle,6,1,2
+5a288879-83dd-4396-921c-46a8f825e7c5,Ke Bonta Sangiovese,Wine,Bottle,6,35,0
+1bcbbdf0-c7e8-4716-a839-f00e7afe30b1,La Borie,Wine,Bottle,,2,0
+71f8c89b-c1fd-42f6-8d16-51b245b9aa7e,La Combette Grenache,Wine,Bottle,,14,0
+d423ca26-4cd0-4845-804d-dd9f75de3021,La Combette rose,Wine,Bottle,,0,0
+f5c0c506-7c8a-4bd1-b80c-a8d8685f4eda,La Combette white,Wine,Bottle,,0,0
+b57d7f6c-b5ff-40f7-936e-6c72a57e5db1,La Nina Malbec,Wine,Bottle,,8,0
+ddbe205e-83dd-418b-998b-bf884ba44e81,Man Meets Mountain,Wine,Bottle,,12,0
+2f563b61-ee7a-4069-9cad-a9c4755c99e3,Mirabello rose,Wine,Bottle,,27,0
+0a35cb01-3d95-4a1a-a5f3-632812cd9327,Mirabello white,Wine,Bottle,,60,0
+a00eec96-0973-429e-b372-b5caea143a1a,Moloko Bay,Wine,Bottle,,16,0
+7e94d19e-adda-49cd-ae01-4a0555b890c9,Mont Roche Malbec,Wine,Bottle,,5,0
+8df2287b-0d02-4fe6-b260-9ad7969db28f,Nice rose cans,Wine,Can,,8,0
+1d0cf632-3b6e-4722-8bc4-1d78464a2647,Nyetimber rose,Wine,Bottle,,11,0
+5753f81e-9db8-4a59-8ba7-125ecea57b33,Palm L'Escarelle rose,Wine,Bottle,6,12,8
+27d7a187-0721-4e73-9759-03e05c73ff5f,Pol Roger,Wine,Bottle,,41,0
+2fcc405b-f2a8-419e-8a12-87a65c83e1d2,Red Nice cans,Wine,Can,,57,0
+ad609455-bf2f-4ced-add0-559de37a8a91,Roebuck Blanc de Noirs,Wine,Bottle,,6,0
+23fddefd-bbb8-493d-824b-b0e8a9f8c855,Roebuck classic,Wine,Bottle,,9,0
+dabe272c-2389-473e-844f-c7fb8c4adb2d,Roebuck rose,Wine,Bottle,,3,0
+5d3171bf-1632-49b3-b3da-51e192d5c14c,Silver Hand classic,Wine,Bottle,6,6,5
+efe5ca69-5f76-4a55-9713-8b44f70c3c79,Silver Hand rose,Wine,Bottle,,11,0
+ef20d531-bf1c-438d-9a73-42171124abee,St John Picpoul,Wine,Bottle,,1,0
+2aefb524-dd57-4bcc-9a5c-e09556f2e20d,The Opportunist Shiraz,Wine,Bottle,,1,0
+576ae5fe-22f7-4c10-a83e-40bb9fdb5fac,Un Ete Provence,Wine,Bottle,,4,0
+7d95c393-2240-49d7-be27-af8543287148,Valldormosa 0% sparkling,Wine,Bottle,,3,0
+421a47f7-a2d3-4cd5-9cf2-7a9fbdc21ab4,Vanel Sauvignon Blanc,Wine,Bottle,,6,0
+4ab13154-6c91-40d8-a37f-a6e6615f5a05,Vinca Maria,Wine,Bottle,,1,0
+930d45a8-3f07-46e6-a747-ce512a283b2c,Vine Crafter,Wine,Bottle,,3,0
+132a0faa-a48f-4ff0-a752-3d09b40c86b6,White Nice cans,Wine,Can,,0,0
+7f425f61-ea4c-4474-a456-664e7118796f,Wood Heater Valley Bacchus,Wine,Bottle,,1,0
+94ddcbbe-9ca4-47c6-93b0-4a93d49648a6,6 O'Clock gin,Spirits,Bottle,,7,0
+b95e1c08-94b0-4ccf-95ce-2bd2af4a3a92,6 O'Clock Gin Cans,Spirits,Can,12,0,14
+d417dc99-76a9-43bb-9196-71eef86b2d51,77 Black cold brew coffee and vanilla liqueur,Spirits,Bottle,,2.2,0
+3873b29e-bbbb-434f-bd98-e1e7a172815f,Antica black sambuca,Spirits,Bottle,,1,0
+2c0719a4-a3f6-42e4-907b-8d132b595f0b,Archers peach schnapps,Spirits,Bottle,,1,0
+e5a692d8-9de2-4c11-9024-dde8b08b028d,Bacardi Carta Negra,Spirits,Bottle,,2,0
+75e72bff-05d8-44ab-81ce-43572cda4c93,Bacardi white rum,Spirits,Bottle,,8.5,0
+98a3431b-29ff-4449-9149-9657b931a00f,Bells whiskey,Spirits,Bottle,,1.5,0
+23e3112a-1b51-431a-a5a3-2e77523a3b23,Bloom gin,Spirits,Bottle,,10.5,0
+ad08535d-32db-433b-ac7d-eeca80d89dc7,Blue curacao,Spirits,Bottle,,7,0
+1c6bf15b-54a1-402a-baf9-1f637334864f,Campari,Spirits,Bottle,,4.1,0
+d239c997-e37a-4206-8495-3cc10a09bf5d,Captain Morgan's dark rum,Spirits,Bottle,,1.1,0
+71f0c28a-28a2-4f81-b627-82621da62987,Captain Morgan's spiced rum,Spirits,Bottle,,0.1,0
+ddc77e68-d7ed-4b99-bbee-6c2f897f5527,Cascabel coffee tequila,Spirits,Bottle,,4,0
+78728470-b9f9-4ebc-85c3-4d87ee1e3654,Clean Co gin,Spirits,Bottle,,0.8,0
+af2cbb75-ee0c-421c-aef0-492f11d92ac3,Cointreau,Spirits,Bottle,,7,0
+b1a1d756-cc77-4e4c-90af-978184f75019,Cotswold dry gin,Spirits,Bottle,,0.8,0
+7c2d7c41-8d6b-4eda-b6f3-d689af2bba01,Courvoisier,Spirits,Bottle,,2,0
+8390f8a4-cdbe-45ca-8f6f-eb3992ed3e16,Creme de peche,Spirits,Bottle,,11.5,0
+c9b2fd39-43fd-4a75-a87a-f68cd50438d9,Disaronno,Spirits,Bottle,,6,0
+080927f2-c639-4bae-8d0c-ac39197dce79,Duppy Share gold rum,Spirits,Bottle,,2,0
+9a857120-d4dc-44e2-a003-198ab978e4f7,Duppy Share spice rum,Spirits,Bottle,,1.1,0
+aeb0659d-bfd6-4a63-95c6-70064d6435a6,Edinburgh classic gin,Spirits,Bottle,,0,0
+6702e9c9-b4b1-4da9-b648-96d370352c8a,Edinburgh elderflower and gooseberry gin,Spirits,Bottle,,2,0
+d8be2f25-a22a-4783-b21b-d4c572271893,Edinburgh gin elderflower liqueur,Spirits,Bottle,,0.3,0
+ef786aab-1d6a-4d44-b840-48ad1ab6c1f9,Edinburgh gin raspberry liqueur,Spirits,Bottle,,8,0
+42a104b1-9785-48cf-bedd-e32a4c7fb651,Edinburgh gin strawberry and pink pepper liqueur,Spirits,Bottle,,4,0
+02753ca6-fe60-4d04-9a9f-49d2052de7ed,Edinburgh orange and basil gin,Spirits,Bottle,,1.7,0
+867fc2e5-7cd2-4343-8247-576f27ec74f4,Edinburgh rhubarb and ginger gin,Spirits,Bottle,,2,0
+a292da17-cb40-404c-b20b-ecc8c1a789c8,Edinburgh rhubarb and ginger liqueur,Spirits,Bottle,,1,0
+a47e15eb-3f4c-4e3a-b6e9-bfe1ec05b1b6,Elder Series 1901 aged 21 years whiskey,Spirits,Bottle,,1,0
+6c34a8c5-002c-4065-ada3-5cfa837dde5f,Famous Grouse,Spirits,Bottle,,1,0
+e19cdceb-1378-48d8-a5e7-39aa45fc7188,Fireball,Spirits,Bottle,,2,0
+866ecd6a-c6a8-475b-90e7-7e0f1b836178,Glenfarclas Highland single malt whiskey,Spirits,Bottle,,1,0
+5a9ae7d9-091f-431f-bf96-eb17c3e356cb,Greenalls wild berry gin,Spirits,Bottle,,1,0
+82c0b3e4-d85d-466b-b053-1fc0bf1538a6,Havana Club original rum,Spirits,Bottle,,0,0
+07d645a2-5a2d-4b11-b5c9-36d36dff0ff2,Jagermeister,Spirits,Bottle,,10.6,0
+91d678df-cc70-4f8f-b6d2-f37586710d42,JJ Dry Gin,Spirits,Bottle,,0,0
+a57e3c3a-9356-4ee8-9342-881dba02a201,Johnnie Walker Black Label,Spirits,Bottle,,10,0
+bbb6483a-d6a2-40b2-bc84-70faf4dac202,Jose Cuervo tequila,Spirits,Bottle,,1.3,0
+f9fdf48f-d532-44ff-9299-71d0ae74db34,Kahlua,Spirits,Bottle,,1,0
+379f35d9-9654-41f2-af41-049fcef03c00,Knob Creek,Spirits,Bottle,,0.5,0
+54b14813-f528-4ba0-bf8c-d7a6d404b133,Lizards black sambuca,Spirits,Bottle,,2.3,0
+06c54f77-082e-4af6-bef1-5cdc5754fc7a,Luxardo limoncello,Spirits,Bottle,,0.3,0
+cbcbd5d4-37e2-4958-a347-351ebdf6ea0a,Martini Bianco,Spirits,Bottle,,5.5,0
+14a1b1e9-0f21-43bb-ae3d-f378df99144f,Martini Rosso,Spirits,Bottle,,6.4,0
+282940c6-3271-47dd-a05a-d0c8f5a56704,Moreish Morello,Spirits,Bottle,,1.8,0
+4e2396b6-930e-4230-aef3-a3d8403e4111,Passoa,Spirits,Bottle,,2,0
+debdb121-d5ef-4944-91c8-4c3c36ff33d9,Pimm's,Spirits,Bottle,,1.5,0
+fa67ef74-028c-4d2d-bdab-197c022773a9,Ramsbury dry gin,Spirits,Bottle,,2,0
+df47d578-747f-451f-a10c-30f5b9806a10,Ramsbury raspberry & honey gin,Spirits,Bottle,,6,0
+7d5e217c-f89b-4c39-afdd-b08e5dc139c9,Southern Comfort,Spirits,Bottle,,1,0
+ffd6a647-1507-439a-95bd-173018b81dc0,Tanqueray 0%,Spirits,Bottle,,1.8,0
+d4edf675-467e-48f6-bd6b-e1991dc62e8f,Tanqueray dry gin,Spirits,Bottle,,0.8,0
+4f6d4b70-5dcd-4415-a59e-298ba66a4dfb,Tanqueray No.10 gin,Spirits,Bottle,,1,0
+0812fba6-1858-41ee-bf2c-361317dc6030,Tanqueray Sevilla gin,Spirits,Bottle,,2,0
+c3ff3987-fa6b-4338-9f61-6b403521dbf9,Tito's vodka,Spirits,Bottle,,0,0
+d449904c-f40e-4f56-adb1-8d6daa4bb7a2,TJ vodka,Spirits,Bottle,,6,0
+85f0e29e-12e5-402f-b26e-8024040e2ec2,True Spirit Social,Spirits,Bottle,,2,0
+a71e606e-3c85-4b28-a29d-5634c9b542ae,White sambuca,Spirits,Bottle,,4.8,0
+da52498f-7d67-40a6-ba74-70d923437500,Apple and raspberry juice,Soft Drinks,Bottle,,10,0
+8077d50a-1f2f-4456-9545-7988dd561634,Apple cartons,Soft Drinks,Carton,,0,0
+f9fc2a9f-8e49-4015-bab3-0580ebe66258,Bensons apple / fruity water,Soft Drinks,Bottle,12,40,1
+9b33773e-03d9-4dd0-982d-0082d844ad9b,"Bensons black currant and apple, sparkling",Soft Drinks,Can,12,12,1
+726d6d51-5cea-4265-a050-a5b958ad4f60,Bensons cloud apple,Soft Drinks,Carton,24,0,2
+3a6de1bb-2c5b-4596-a5bf-4ea8d332f0ce,Bensons zesty orange juice,Soft Drinks,Carton,24,0,2
+4d82f77f-85ac-4632-b70e-c95952876c78,Canned still water,Soft Drinks,Can,24,33,2
+ec0b6911-3314-470a-8577-2bd4189a7380,Coca Cola,Soft Drinks,Can,24,0,0
+85ecbfd8-e0a4-4e58-b8db-3ace824efdd4,Cranberry juice,Soft Drinks,Carton,24,30,0
+2dcdf5e5-c842-4501-9f06-b9ee1a8ea7b1,Diet Coke,Soft Drinks,Can,24,4,0
+14d1e79f-8dd5-4168-b03a-133e8d44dc52,Eager apple juice,Soft Drinks,Carton,8,0,2
+3a0127d1-f009-48c1-b7c0-af87eadbab8d,Elderflower presse,Soft Drinks,Bottle,12,11,3
+141aa6bd-c407-4269-8db8-8e7f3d93e632,Elderflower raspberry,Soft Drinks,Bottle,,8,0
+c42fd473-8b61-4a59-badf-1405c94e3ca8,Frobisher apple juice,Soft Drinks,Bottle,24,41,6
+37f496cc-7f08-4d9a-a0c0-e7b3f0e8dd67,Frobisher orange juice,Soft Drinks,Bottle,24,28,6
+6754ceee-a556-4c51-9e83-d5402981c95f,Frobisher raspberry and rhubarb,Soft Drinks,Bottle,12,0,1
+73273f63-257d-4f5c-8c7e-e7fa08e0d86d,Frobisher Sicilian lemonade,Soft Drinks,Bottle,12,24,8
+279aa2f5-dcb0-4d2a-a53c-2024c4a9ef9f,Ginger beer,Soft Drinks,Bottle,24,0,2
+88748e27-909b-45a6-a718-a690802f0f0a,Indian tonic small bottles,Soft Drinks,Bottle,24,165,5
+d3f01051-62b9-4542-985f-fa4513e83a79,"Indian tonic water, large bottles",Soft Drinks,Bottle,6,0,1
+a5c02c28-5e5c-4d8a-a4e1-6a5b4eb6952c,Kick,Soft Drinks,Can,24,0,13
+5e56cbbc-0263-4830-8fad-4ad4748a5fcd,"Lemonade, big bottles",Soft Drinks,Bottle,12,1,0
+c5dea449-d6d4-450a-b858-b1aa51b36592,Orange cartons,Soft Drinks,Carton,,6,0
+351242f6-8191-46ff-981a-ebb4807e62b8,Orange juice,Soft Drinks,Carton,8,0,6
+357ba352-cda6-40b9-9ebe-2bd6db2123d2,Orange San Pellegrino,Soft Drinks,Bottle,,9,0
+e71f3921-21c9-4056-bb98-eafab9822413,Pineapple juice,Soft Drinks,Carton,8,0,2
+bdbe8e66-73c7-4cce-9f20-f11d0ead4705,Pink grapefruit soda,Soft Drinks,Bottle,,29,0
+cb1d69ae-ee1e-43a4-91b5-fb58aed09376,Small Fever-Tree lemonade,Soft Drinks,Bottle,24,70,1
+046cd43f-1fe8-4cac-af4a-c1dc4b7471e1,Small Wenlock spring water,Soft Drinks,Bottle,,25,0
+6ab94825-02f1-487a-93cc-eca508d2e680,"Soda water, large",Soft Drinks,Bottle,12,12,0
+f749e57b-41e1-4bac-8bee-235d2264ca1c,Sparkling cans,Soft Drinks,Can,,105,0
+bdd83b7f-58e7-4c25-b57c-65f91dc374dd,"Sparkling water, large",Soft Drinks,Bottle,12,0,1.8
+e6153bf1-c7e1-422a-a379-8f3b9ef0cfd5,Tonic cans,Soft Drinks,Can,24,0,5
+0a723f37-b09f-4130-8abc-f5e577c03d8a,Tonic large bottles,Soft Drinks,Bottle,6,7,2
+010e4ff4-0088-4b20-8e30-bc7c34a22635,Agave syrup,Other,Bottle,,1.8,0
+39b4ad01-21cb-47d4-961e-ca8bc86d5d2f,Coffee concentrate,Other,Bottle,,2,0
+9920a67d-4125-40d1-9d77-f7cc467c85db,Elderflower cordial,Other,Bottle,,3.5,0
+59a63df7-d96d-4a67-8f8a-e947379c570c,Lemon puree,Other,Bottle,,1,0
+f3d515f2-3602-4cbb-b582-2b6724cfa37d,Passion fruit puree,Other,Bottle,,4,0
+d6aef8cf-a271-418d-b591-af2d980fa25e,Raspberry puree,Other,Bottle,,2,0
+42ec44b9-3965-4b9d-9dce-b0df49fafbd7,Rhubarb syrup,Other,Bottle,,3.7,0
+5743bbca-e684-4a22-bd0c-1f9b619e4af0,Simple syrup,Other,Bottle,,1.6,0
